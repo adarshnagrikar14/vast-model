@@ -3,6 +3,7 @@ import tempfile
 from flask import Flask, request, send_file, jsonify
 from predict import Predictor
 from pathlib import Path
+import traceback  # Import traceback for detailed error logging
 
 app = Flask(__name__)
 
@@ -15,133 +16,153 @@ predictor.setup()
 def index():
     return jsonify({
         "status": "online",
-        "endpoints": {
-            "/generate": "POST - Generate image using form data",
-            "/api/generate": "POST - Generate image using JSON data"
-        },
+        "endpoint": "/generate",
+        "method": "POST",
+        "description": "Generate image using form data based on subject, mask, and expression.",
         "parameters": {
-            "prompt": "Input prompt (used if image analysis is not enabled)",
-            "spatial_img": "Reference image file (form endpoint) or image_url (API endpoint)",
-            "base_prompt": "Text to prepend to the Gemini-generated prompt",
-            "height": "Height of output image (default: 768)",
-            "width": "Width of output image (default: 512)",
-            "seed": "Random seed (default: 16)",
-            "control_type": "LoRA control type (Manhwa or None, default: Manhwa)",
-            "lora_scale": "Scale for the LoRA weights (0.0-2.0, default: 0.85)"
+            "subject": "Input image file for subject conditioning.",
+            "mask": "Inpainting mask image file (white areas will be inpainted).",
+            "expression": "Desired facial expression for the manhwa style (e.g., 'happy', 'angry', 'surprised', 'neutral', default: 'angry')."
         },
-        "example_curl": 'curl -X POST http://localhost:8000/api/generate -H "Content-Type: application/json" -d \'{"prompt": "A heroic character", "base_prompt": "Create a detailed illustration with clean lines and vibrant colors", "image_url": "https://example.com/image.jpg", "lora_scale": 0.8}\' --output result.png'
+        "example_curl": 'curl -X POST http://localhost:8000/generate -F "subject=@/path/to/subject.png" -F "mask=@/path/to/mask.png" -F "expression=happy" --output result.png'
     })
 
 
 @app.route('/generate', methods=['POST'])
 def generate():
+    subject_temp_file = None
+    mask_temp_file = None
+    output_temp_file = None
+
     try:
-        # Get form data
-        prompt = request.form.get('prompt', '')
-        height = int(request.form.get('height', 768))
-        width = int(request.form.get('width', 512))
-        seed = int(request.form.get('seed', 16))
-        control_type = request.form.get('control_type', 'Manhwa')
-        lora_scale = float(request.form.get('lora_scale', 1.25))
-        base_prompt = request.form.get('base_prompt', '')
+        # --- Get Inputs ---
+        # Expression
+        # Default to 'angry' if not provided
+        expression = request.form.get('expression', 'angry')
 
-        # Handle file upload to temp file
-        spatial_img = None
-        if 'spatial_img' in request.files:
-            file = request.files['spatial_img']
-            if file.filename:
-                temp_file = tempfile.NamedTemporaryFile(
-                    delete=False, suffix='.png')
-                file.save(temp_file.name)
-                spatial_img = Path(temp_file.name)
+        # Subject Image
+        if 'subject' not in request.files or not request.files['subject'].filename:
+            return jsonify({'error': 'Missing "subject" image file in form data.'}), 400
+        subject_file = request.files['subject']
+        # Keep original extension if possible
+        subject_suffix = Path(subject_file.filename).suffix or '.png'
+        subject_temp_file = tempfile.NamedTemporaryFile(
+            delete=False, suffix=subject_suffix)
+        subject_file.save(subject_temp_file.name)
+        subject_path = Path(subject_temp_file.name)
+        print(f"Saved subject image to temporary file: {subject_path}")
 
-        # Generate image
-        output_path = predictor.predict(
-            prompt=prompt,
-            spatial_img=spatial_img,
-            base_prompt=base_prompt if base_prompt else None,
-            height=height,
-            width=width,
-            seed=seed,
-            control_type=control_type,
-            lora_scale=lora_scale
+        # Mask Image
+        if 'mask' not in request.files or not request.files['mask'].filename:
+            # Clean up subject temp file if mask is missing
+            os.unlink(subject_path)
+            return jsonify({'error': 'Missing "mask" image file in form data.'}), 400
+        mask_file = request.files['mask']
+        # Keep original extension
+        mask_suffix = Path(mask_file.filename).suffix or '.png'
+        mask_temp_file = tempfile.NamedTemporaryFile(
+            delete=False, suffix=mask_suffix)
+        mask_file.save(mask_temp_file.name)
+        mask_path = Path(mask_temp_file.name)
+        print(f"Saved mask image to temporary file: {mask_path}")
+
+        # --- Call Predictor ---
+        # Uses defaults from predict.py for height, width, seed, lora_scales
+        print(
+            f"Calling predictor with subject: {subject_path}, mask: {mask_path}, expression: {expression}")
+        output_path_predictor = predictor.predict(
+            input_image=subject_path,
+            inpainting_mask=mask_path,
+            expression=expression
         )
+        print(f"Predictor returned output path: {output_path_predictor}")
 
-        # Create a temporary file for response
-        temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-        with open(output_path, 'rb') as f_in:
-            with open(temp_output.name, 'wb') as f_out:
+        # --- Prepare Response ---
+        # Create a separate temporary file for sending the response to avoid issues
+        # if the original predictor output needs to persist or gets cleaned up elsewhere.
+        output_temp_file = tempfile.NamedTemporaryFile(
+            delete=False, suffix='.png')
+        with open(output_path_predictor, 'rb') as f_in:
+            with open(output_temp_file.name, 'wb') as f_out:
                 f_out.write(f_in.read())
+        print(
+            f"Copied predictor output to response temp file: {output_temp_file.name}")
 
-        response = send_file(temp_output.name, mimetype='image/png')
+        response = send_file(output_temp_file.name, mimetype='image/png')
 
-        # Clean up the input temp file if it exists
-        if spatial_img:
-            os.unlink(spatial_img)
-
+        # --- Cleanup ---
+        # Use call_on_close for robust cleanup even if client disconnects
         @response.call_on_close
         def cleanup():
-            # Clean up both input and output temp files
-            if os.path.exists(temp_output.name):
-                os.unlink(temp_output.name)
+            print("Cleaning up temporary files...")
+            if subject_temp_file and os.path.exists(subject_temp_file.name):
+                try:
+                    os.unlink(subject_temp_file.name)
+                    print(
+                        f"Deleted subject temp file: {subject_temp_file.name}")
+                except Exception as e:
+                    print(
+                        f"Error deleting subject temp file {subject_temp_file.name}: {e}")
+            if mask_temp_file and os.path.exists(mask_temp_file.name):
+                try:
+                    os.unlink(mask_temp_file.name)
+                    print(f"Deleted mask temp file: {mask_temp_file.name}")
+                except Exception as e:
+                    print(
+                        f"Error deleting mask temp file {mask_temp_file.name}: {e}")
+            # Clean up the predictor's original output file if it's different from the response temp file
+            # This might be the same file if predict.py saves directly to OUTPUT_FILENAME
+            # Assuming predict.py saves here
+            predictor_output_filename = Path("output.png")
+            if os.path.exists(predictor_output_filename) and \
+               (not output_temp_file or Path(output_temp_file.name).resolve() != predictor_output_filename.resolve()):
+                try:
+                    os.unlink(predictor_output_filename)
+                    print(
+                        f"Deleted predictor output file: {predictor_output_filename}")
+                except Exception as e:
+                    print(
+                        f"Error deleting predictor output file {predictor_output_filename}: {e}")
+
+            # Clean up the response temporary file last
+            if output_temp_file and os.path.exists(output_temp_file.name):
+                try:
+                    os.unlink(output_temp_file.name)
+                    print(
+                        f"Deleted response temp file: {output_temp_file.name}")
+                except Exception as e:
+                    print(
+                        f"Error deleting response temp file {output_temp_file.name}: {e}")
 
         return response
 
     except Exception as e:
-        # Clean up temp files in case of error
-        if 'spatial_img' in locals() and spatial_img:
-            if os.path.exists(spatial_img):
-                os.unlink(spatial_img)
-        return jsonify({'error': str(e)}), 500
+        print(f"An error occurred: {e}")
+        print(traceback.format_exc())  # Print full traceback for debugging
+        # Ensure cleanup happens even on error before returning response
+        if subject_temp_file and os.path.exists(subject_temp_file.name):
+            try:
+                os.unlink(subject_temp_file.name)
+                print(
+                    f"Cleaned up subject temp file on error: {subject_temp_file.name}")
+            except Exception as clean_e:
+                print(f"Error during error cleanup (subject): {clean_e}")
+        if mask_temp_file and os.path.exists(mask_temp_file.name):
+            try:
+                os.unlink(mask_temp_file.name)
+                print(
+                    f"Cleaned up mask temp file on error: {mask_temp_file.name}")
+            except Exception as clean_e:
+                print(f"Error during error cleanup (mask): {clean_e}")
+        if output_temp_file and os.path.exists(output_temp_file.name):
+            try:
+                os.unlink(output_temp_file.name)
+                print(
+                    f"Cleaned up output temp file on error: {output_temp_file.name}")
+            except Exception as clean_e:
+                print(f"Error during error cleanup (output): {clean_e}")
 
-
-@app.route('/api/generate', methods=['POST'])
-def api_generate():
-    try:
-        # Get JSON data
-        data = request.get_json()
-        prompt = data.get('prompt', '')
-        height = int(data.get('height', 768))
-        width = int(data.get('width', 512))
-        seed = int(data.get('seed', 16))
-        control_type = data.get('control_type', 'Manhwa')
-        lora_scale = float(data.get('lora_scale', 0.85))
-        # Always pass base_prompt even if empty
-        base_prompt = data.get('base_prompt', '')
-
-        # Handle image URL if provided
-        spatial_img = data.get('image_url', None)
-
-        # Generate image
-        output_path = predictor.predict(
-            prompt=prompt,
-            spatial_img=spatial_img,
-            base_prompt=base_prompt,
-            height=height,
-            width=width,
-            seed=seed,
-            control_type=control_type,
-            lora_scale=lora_scale
-        )
-
-        # Create a temporary file for response
-        temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-        with open(output_path, 'rb') as f_in:
-            with open(temp_output.name, 'wb') as f_out:
-                f_out.write(f_in.read())
-
-        response = send_file(temp_output.name, mimetype='image/png')
-
-        @response.call_on_close
-        def cleanup():
-            # Clean up output temp file
-            if os.path.exists(temp_output.name):
-                os.unlink(temp_output.name)
-
-        return response
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 
 
 if __name__ == '__main__':

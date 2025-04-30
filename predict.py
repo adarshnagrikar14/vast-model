@@ -210,12 +210,12 @@ class Predictor(BasePredictor):
                 height=height,
                 width=width,
                 guidance_scale=3.5,
-                num_inference_steps=20,
+                num_inference_steps=25,
                 max_sequence_length=512,
                 generator=generator,
                 subject_images=subject_images_pil,
                 spatial_images=spatial_images_pil,
-                cond_size=512,
+                cond_size=768,
             ).images[0]
             print("Flux pipeline generation successful.")
 

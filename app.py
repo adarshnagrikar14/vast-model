@@ -56,12 +56,12 @@ def edit_image_openai(client: OpenAI, input_image_path: str, edit_prompt: str) -
         print(f"Sending image '{input_image_path}' to OpenAI for editing...")
         with open(input_image_path, "rb") as img_file:
             response = client.images.edit(
-                model="dall-e-2",  # Or gpt-image-1 if that was intended - DALL-E 2 edit endpoint is standard
+                model="gpt-image-1",
                 image=img_file,
                 prompt=edit_prompt,
                 n=1,
-                size="1024x1024",  # Ensure this size is supported
-                response_format="b64_json"  # Request b64_json explicitly
+                size="1024x1024",
+                quality="low"
             )
 
         b64_data = response.data[0].b64_json

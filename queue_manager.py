@@ -91,19 +91,20 @@ class QueueManager:
                 # --- Call Predictor using run_in_executor ---
                 try:
                     print(f"Job {job_id}: Calling loop.run_in_executor...")
-                    # Pass predictor method and its arguments separately
+                    loop = asyncio.get_running_loop()  # Ensure loop is defined here
                     output_path_from_thread = await loop.run_in_executor(
-                        self.executor,  # Use the shared executor
-                        self.predictor.predict,  # The function to call
-                        # Arguments for predictor.predict:
-                        job_data["input_image_bytes"],
-                        job_data["mask_image_bytes"],
-                        job_data["expression"],
-                        job_data["seed"],
-                        job_data["height"],
-                        job_data["width"],
-                        job_data["subject_lora_scale"],
-                        job_data["inpainting_lora_scale"]
+                        self.executor,
+                        self.predictor.predict,
+                        # --- CORRECTED ARGUMENT ORDER ---
+                        job_data["input_image_bytes"],      # 1
+                        job_data["mask_image_bytes"],       # 2
+                        job_data["expression"],             # 3
+                        job_data["height"],                 # 4 CORRECT
+                        job_data["width"],                  # 5 CORRECT
+                        job_data["seed"],                   # 6 CORRECT
+                        job_data["subject_lora_scale"],     # 7
+                        job_data["inpainting_lora_scale"]   # 8
+                        # --- END CORRECTED ORDER ---
                     )
                     print(
                         f"Job {job_id}: >>> run_in_executor call completed. Raw result: {output_path_from_thread} <<<")

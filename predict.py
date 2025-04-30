@@ -33,6 +33,12 @@ SUBJECT_LORA_FILENAME = "subject.safetensors"
 INPAINTING_LORA_FILENAME = "inpainting.safetensors"
 OUTPUT_FILENAME = "output.png"
 
+# --- Define Temp Dir (matching app.py) ---
+# Although predict only WRITES temp files, using the same dir might simplify debugging/permissions
+TEMP_DIR = "./tmp_job_files"
+# Ensure it exists (optional here, as app.py should create it, but safe)
+# os.makedirs(TEMP_DIR, exist_ok=True) # Not strictly needed if app.py runs first
+
 
 def clear_cache(transformer):
     for name, attn_processor in transformer.attn_processors.items():
@@ -170,7 +176,10 @@ class Predictor(BasePredictor):
             # Input paths are now strings passed by the queue manager
             try:
                 subject_image_pil = PILImage.open(input_image).convert("RGB")
-                # print(f"Loaded subject image: {input_image}") # Optional logging
+            except FileNotFoundError:
+                print(
+                    f"FATAL ERROR PREDICT: Input subject file not found at path: {input_image}")
+                raise  # Re-raise specific error
             except Exception as e:
                 raise ValueError(
                     f"Failed to load subject image {input_image}: {e}")
@@ -178,7 +187,10 @@ class Predictor(BasePredictor):
             try:
                 inpainting_mask_pil = PILImage.open(
                     inpainting_mask).convert("RGB")
-                # print(f"Loaded inpainting mask: {inpainting_mask}") # Optional logging
+            except FileNotFoundError:
+                print(
+                    f"FATAL ERROR PREDICT: Input mask file not found at path: {inpainting_mask}")
+                raise  # Re-raise specific error
             except Exception as e:
                 raise ValueError(
                     f"Failed to load inpainting mask {inpainting_mask}: {e}")
@@ -218,11 +230,12 @@ class Predictor(BasePredictor):
             print("Flux pipeline generation successful.")
 
             # --- Save Output Temporarily ---
-            # Use mkstemp to get a unique temporary file name
+            # Use mkstemp to get a unique temporary file name in the defined TEMP_DIR
             output_fd, output_path_str = tempfile.mkstemp(
-                suffix=".png", prefix="flux_output_")
+                suffix=".png", prefix="flux_output_", dir=TEMP_DIR)  # Use TEMP_DIR
             os.close(output_fd)  # Close the file descriptor
             generated_pil_image.save(output_path_str)
+            # Keep this log
             print(f"Predictor output saved temporarily to {output_path_str}")
             return output_path_str  # Return the path as a string
 

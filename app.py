@@ -7,6 +7,16 @@ import asyncio
 from predict import Predictor
 from queue_manager import QueueManager  # Import the new manager
 
+# --- Define and ensure temporary directory ---
+TEMP_DIR = "./tmp_job_files"  # Relative path within your project
+try:
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    print(f"Ensured temporary directory exists: {os.path.abspath(TEMP_DIR)}")
+except OSError as e:
+    print(f"FATAL: Could not create temporary directory {TEMP_DIR}: {e}")
+    # Depending on requirements, you might want to exit or raise here
+    # For now, we'll let it proceed and potentially fail later if creation failed.
+
 app = Flask(__name__)
 
 # --- Initialization ---
@@ -62,19 +72,29 @@ async def generate():
         subject_suffix = Path(subject_file.filename).suffix or '.png'
         # Save with delete=False, manager will clean up
         subject_temp_fd, subject_temp_file_path = tempfile.mkstemp(
-            suffix=subject_suffix)
+            suffix=subject_suffix, dir=TEMP_DIR)
         subject_file.save(subject_temp_file_path)
         os.close(subject_temp_fd)  # Close descriptor after saving
         print(f"Saved subject temp file: {subject_temp_file_path}")
 
         if 'mask' not in request.files or not request.files['mask'].filename:
-            # Clean up subject
-            await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path)
+            # Clean up subject if mask is missing (before job submission)
+            # Use a direct os.unlink here as the job hasn't been submitted yet
+            if subject_temp_file_path and os.path.exists(subject_temp_file_path):
+                try:
+                    os.unlink(subject_temp_file_path)
+                    print(
+                        f"Cleaned up orphaned subject file: {subject_temp_file_path}")
+                except Exception as clean_e:
+                    print(
+                        f"Warning: Failed to cleanup orphaned subject file {subject_temp_file_path}: {clean_e}")
+            # await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path) # Removed
             return jsonify({'error': 'Missing "mask" image file.'}), 400
         mask_file = request.files['mask']
         mask_suffix = Path(mask_file.filename).suffix or '.png'
+        # Use the defined TEMP_DIR
         mask_temp_fd, mask_temp_file_path = tempfile.mkstemp(
-            suffix=mask_suffix)
+            suffix=mask_suffix, dir=TEMP_DIR)
         mask_file.save(mask_temp_file_path)
         os.close(mask_temp_fd)
         print(f"Saved mask temp file: {mask_temp_file_path}")
@@ -94,7 +114,18 @@ async def generate():
             }
         except ValueError as e:
             # Handle potential errors converting form data to int/float
-            await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path, mask_temp_file_path)
+            # Clean up both files manually if job data prep fails
+            if subject_temp_file_path and os.path.exists(subject_temp_file_path):
+                try:
+                    os.unlink(subject_temp_file_path)
+                except Exception:
+                    pass  # Ignore cleanup error
+            if mask_temp_file_path and os.path.exists(mask_temp_file_path):
+                try:
+                    os.unlink(mask_temp_file_path)
+                except Exception:
+                    pass  # Ignore cleanup error
+            # await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path, mask_temp_file_path) # Removed
             return jsonify({'error': f'Invalid parameter format: {e}'}), 400
 
         # --- Submit Job to Queue Manager ---
@@ -110,8 +141,22 @@ async def generate():
 
     except Exception as e:
         print(f"Error in /generate endpoint: {e}\n{traceback.format_exc()}")
-        # Attempt cleanup if files were created before the error
-        await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path, mask_temp_file_path)
+        # Critical error during submission *after* file creation but *before* job acceptance.
+        # The QueueManager won't know about these files. Attempt manual cleanup.
+        # This is a fallback; ideally QueueManager handles all cleanup post-submission.
+        if subject_temp_file_path and os.path.exists(subject_temp_file_path):
+            try:
+                os.unlink(subject_temp_file_path)
+            except Exception:
+                print(
+                    f"Warning: Failed final cleanup for {subject_temp_file_path}")
+        if mask_temp_file_path and os.path.exists(mask_temp_file_path):
+            try:
+                os.unlink(mask_temp_file_path)
+            except Exception:
+                print(
+                    f"Warning: Failed final cleanup for {mask_temp_file_path}")
+        # Removed: await queue_manager._cleanup_temp_files(...)
         return jsonify({'error': 'An internal error occurred during job submission.', 'detail': str(e)}), 500
 
 

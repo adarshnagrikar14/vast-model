@@ -267,7 +267,7 @@ async def generate():
 
         # --- Submit Job ---
         print(f"Submitting job with processed subject bytes...")
-        job_id = await queue_manager.submit_job(job_data)
+        job_id = queue_manager.submit_job(job_data)
 
         return jsonify({'job_id': job_id, 'status': 'submitted'}), 202
 

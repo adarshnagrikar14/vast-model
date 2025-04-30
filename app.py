@@ -4,6 +4,7 @@ from flask import Flask, request, send_file, jsonify
 from predict import Predictor
 from pathlib import Path
 import traceback  # Import traceback for detailed error logging
+import base64  # Add base64 import
 
 app = Flask(__name__)
 
@@ -32,7 +33,7 @@ def index():
 def generate():
     subject_temp_file = None
     mask_temp_file = None
-    output_temp_file = None
+    # output_temp_file = None # No longer needed for response, only for predictor output handling
 
     try:
         # --- Get Inputs ---
@@ -73,28 +74,36 @@ def generate():
         output_path_predictor = predictor.predict(
             input_image=subject_path,
             inpainting_mask=mask_path,
-            expression=expression, seed=25, height  = 768, width = 512, subject_lora_scale=1.1, inpainting_lora_scale=1.18
+            expression=expression, seed=25, height=768, width=512, subject_lora_scale=1.1, inpainting_lora_scale=1.18
         )
         print(f"Predictor returned output path: {output_path_predictor}")
 
         # --- Prepare Response ---
-        # Create a separate temporary file for sending the response to avoid issues
-        # if the original predictor output needs to persist or gets cleaned up elsewhere.
-        output_temp_file = tempfile.NamedTemporaryFile(
-            delete=False, suffix='.png')
-        with open(output_path_predictor, 'rb') as f_in:
-            with open(output_temp_file.name, 'wb') as f_out:
-                f_out.write(f_in.read())
-        print(
-            f"Copied predictor output to response temp file: {output_temp_file.name}")
+        # Read the output file and encode it as Base64
+        image_base64 = None
+        try:
+            with open(output_path_predictor, 'rb') as f:
+                image_bytes = f.read()
+                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                print(f"Encoded image from {output_path_predictor} to Base64.")
+        except Exception as e:
+            print(f"Error reading or encoding predictor output file: {e}")
+            # Clean up input files before raising internal error
+            if subject_temp_file and os.path.exists(subject_temp_file.name):
+                os.unlink(subject_temp_file.name)
+            if mask_temp_file and os.path.exists(mask_temp_file.name):
+                os.unlink(mask_temp_file.name)
+            raise  # Re-raise the exception to be caught by the outer try-except
 
-        response = send_file(output_temp_file.name, mimetype='image/png')
+        # Prepare the JSON response
+        response_data = {'image_base64': image_base64}
 
         # --- Cleanup ---
-        # Use call_on_close for robust cleanup even if client disconnects
-        @response.call_on_close
-        def cleanup():
+        # Use a function to schedule cleanup *after* the request context ends
+        # This is simpler than call_on_close when not using send_file
+        def cleanup_files():
             print("Cleaning up temporary files...")
+            # Input files
             if subject_temp_file and os.path.exists(subject_temp_file.name):
                 try:
                     os.unlink(subject_temp_file.name)
@@ -110,36 +119,34 @@ def generate():
                 except Exception as e:
                     print(
                         f"Error deleting mask temp file {mask_temp_file.name}: {e}")
-            # Clean up the predictor's original output file if it's different from the response temp file
-            # This might be the same file if predict.py saves directly to OUTPUT_FILENAME
-            # Assuming predict.py saves here
-            predictor_output_filename = Path("output.png")
-            if os.path.exists(predictor_output_filename) and \
-               (not output_temp_file or Path(output_temp_file.name).resolve() != predictor_output_filename.resolve()):
+
+            # Predictor output file (make sure it exists before deleting)
+            # Use the actual path returned
+            predictor_output_path = Path(output_path_predictor)
+            if predictor_output_path.exists():
                 try:
-                    os.unlink(predictor_output_filename)
+                    os.unlink(predictor_output_path)
                     print(
-                        f"Deleted predictor output file: {predictor_output_filename}")
+                        f"Deleted predictor output file: {predictor_output_path}")
                 except Exception as e:
                     print(
-                        f"Error deleting predictor output file {predictor_output_filename}: {e}")
+                        f"Error deleting predictor output file {predictor_output_path}: {e}")
 
-            # Clean up the response temporary file last
-            if output_temp_file and os.path.exists(output_temp_file.name):
-                try:
-                    os.unlink(output_temp_file.name)
-                    print(
-                        f"Deleted response temp file: {output_temp_file.name}")
-                except Exception as e:
-                    print(
-                        f"Error deleting response temp file {output_temp_file.name}: {e}")
+        # Register cleanup function to run after request is complete
+        from flask import after_this_request
 
-        return response
+        @after_this_request
+        def schedule_cleanup(response):
+            cleanup_files()
+            return response
+
+        return jsonify(response_data)
 
     except Exception as e:
         print(f"An error occurred: {e}")
         print(traceback.format_exc())  # Print full traceback for debugging
         # Ensure cleanup happens even on error before returning response
+        # Note: predictor output might not exist or be cleaned up if error was before/during prediction
         if subject_temp_file and os.path.exists(subject_temp_file.name):
             try:
                 os.unlink(subject_temp_file.name)
@@ -154,13 +161,8 @@ def generate():
                     f"Cleaned up mask temp file on error: {mask_temp_file.name}")
             except Exception as clean_e:
                 print(f"Error during error cleanup (mask): {clean_e}")
-        if output_temp_file and os.path.exists(output_temp_file.name):
-            try:
-                os.unlink(output_temp_file.name)
-                print(
-                    f"Cleaned up output temp file on error: {output_temp_file.name}")
-            except Exception as clean_e:
-                print(f"Error during error cleanup (output): {clean_e}")
+        # Don't try to delete output_temp_file as it's removed
+        # Predictor output cleanup is handled by the main cleanup logic or might fail if prediction failed
 
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 

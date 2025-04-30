@@ -69,25 +69,23 @@ class QueueManager:
                     f"Failed processing image from Replicate URL {url}: {e}") from e
 
     async def _process_locally(self, job_id: str, job_data: dict):
-        output_path = None
-        task_exception = None
-        task_result = None
-
-        print(f"Job {job_id}: Entering _process_locally.")  # Log entry
+        print(f"Job {job_id}: >>> ENTERING SIMPLIFIED _process_locally <<<")
+        output_path_from_thread = None
+        thread_exception = None
 
         try:
             async with self.local_semaphore:
-                self.job_store[job_id]["status"] = "processing_local"
+                # Update status immediately to processing
+                self.job_store[job_id]["status"] = "processing_local_simplified"
                 print(
-                    f"Job {job_id}: Acquired local semaphore. Preparing to run predictor thread.")
+                    f"Job {job_id}: Acquired semaphore. Status -> processing_local_simplified.")
 
-                # --- Call Predictor in Thread ---
+                # --- Call Predictor ---
                 try:
-                    print(
-                        f"Job {job_id}: Calling asyncio.to_thread for predictor.predict...")
-                    # Explicitly await the result here
-                    task_result = await asyncio.to_thread(
+                    print(f"Job {job_id}: Calling asyncio.to_thread...")
+                    output_path_from_thread = await asyncio.to_thread(
                         self.predictor.predict,
+                        # Pass necessary args
                         input_image_bytes=job_data["input_image_bytes"],
                         mask_image_bytes=job_data["mask_image_bytes"],
                         expression=job_data["expression"],
@@ -97,88 +95,59 @@ class QueueManager:
                         subject_lora_scale=job_data["subject_lora_scale"],
                         inpainting_lora_scale=job_data["inpainting_lora_scale"]
                     )
-                    # ---->>>> LOGGING POINT 1 <<<<----
                     print(
-                        f"Job {job_id}: asyncio.to_thread call completed. Result raw: {task_result}")
+                        f"Job {job_id}: >>> Thread finished. Raw result: {output_path_from_thread} <<<")
 
-                except Exception as thread_exc:
-                    # ---->>>> LOGGING POINT 2 <<<<----
+                except Exception as e:
                     print(
-                        f"Job {job_id}: Exception caught *directly* from asyncio.to_thread: {thread_exc}\n{traceback.format_exc()}")
-                    task_exception = thread_exc  # Store the exception
+                        f"Job {job_id}: >>> Exception IN thread: {e}\n{traceback.format_exc()} <<<")
+                    thread_exception = e
 
-                # ---->>>> LOGGING POINT 3 <<<<----
-                # This code runs AFTER the await completes OR the exception is caught.
+                # --- VERY Basic Post-Thread Logic ---
+                # Check if we reach this point AT ALL
                 print(
-                    f"Job {job_id}: Proceeding after thread execution/exception handling.")
-                print(
-                    f"Job {job_id}: Task Exception: {task_exception}, Task Result: {task_result}")
+                    f"Job {job_id}: >>> Reached post-thread code block. Exception was: {thread_exception} <<<")
 
-                # --- Process Result and Update Status ---
-                if task_exception:
-                    # ---->>>> LOGGING POINT 4 <<<<----
+                # Attempt a simple status update based ONLY on whether the thread threw an error
+                if thread_exception:
                     print(
-                        f"Job {job_id}: Handling predictor failure case (task_exception exists).")
-                    self.job_store[job_id]["status"] = "failed"
-                    self.job_store[job_id]["result"] = f"Predictor error: {str(task_exception)}"
-
-                elif not task_result or not isinstance(task_result, str) or not os.path.exists(task_result):
-                    # ---->>>> LOGGING POINT 5 <<<<----
-                    # Check if result is a valid path string and exists
-                    output_path = str(
-                        task_result) if task_result else "None"  # For logging
-                    print(
-                        f"Job {job_id}: Handling bad predictor result. Path: {output_path}, Exists: {os.path.exists(output_path) if task_result else 'N/A'}.")
+                        f"Job {job_id}: Attempting status update -> failed (thread error)")
                     self.job_store[job_id]["status"] = "failed"
                     self.job_store[job_id][
-                        "result"] = f"Predictor returned invalid path: {output_path}"
-                    output_path = None  # Prevent cleanup error
-
-                else:
-                    # ---->>>> LOGGING POINT 6 <<<<----
-                    # Predictor succeeded, result looks like a valid path
-                    output_path = task_result  # Assign valid path
+                        "result"] = f"Predictor thread error: {str(thread_exception)}"
+                elif output_path_from_thread and isinstance(output_path_from_thread, str):
+                    # If thread finished and returned a string path (don't check exists, don't read)
                     print(
-                        f"Job {job_id}: Predictor success. Proceeding with post-processing for path: {output_path}")
-                    try:
-                        print(
-                            f"Job {job_id}: Reading output file: {output_path}")
-                        with open(output_path, 'rb') as f:
-                            image_bytes = f.read()
-                        print(f"Job {job_id}: Read {len(image_bytes)} bytes.")
+                        f"Job {job_id}: Attempting status update -> thread_finished_ok")
+                    # Use a distinct status to indicate this simplified success
+                    self.job_store[job_id]["status"] = "thread_finished_ok"
+                    # Store path as result
+                    self.job_store[job_id][
+                        "result"] = f"Predictor returned path: {output_path_from_thread}"
+                else:
+                    # Thread didn't error but didn't return a usable path
+                    print(
+                        f"Job {job_id}: Attempting status update -> failed (bad thread result)")
+                    self.job_store[job_id]["status"] = "failed"
+                    self.job_store[job_id][
+                        "result"] = f"Predictor thread returned invalid result: {output_path_from_thread}"
 
-                        print(f"Job {job_id}: Base64 encoding...")
-                        base64_result = base64.b64encode(
-                            image_bytes).decode('utf-8')
-                        print(f"Job {job_id}: Base64 done.")
+                print(
+                    f"Job {job_id}: >>> Post-thread status update attempted. Final status should be '{self.job_store[job_id]['status']}' <<<")
 
-                        print(f"Job {job_id}: Updating status to 'completed'.")
-                        self.job_store[job_id]["status"] = "completed"
-                        self.job_store[job_id]["result"] = base64_result
-                        print(f"Job {job_id}: Status updated to 'completed'.")
-
-                    except Exception as post_proc_exc:
-                        # ---->>>> LOGGING POINT 7 <<<<----
-                        print(
-                            f"Job {job_id}: Exception during post-processing: {post_proc_exc}\n{traceback.format_exc()}")
-                        self.job_store[job_id]["status"] = "failed"
-                        self.job_store[job_id][
-                            "result"] = f"Post-processing error: {str(post_proc_exc)}"
-
-        except Exception as main_exc:
-            # ---->>>> LOGGING POINT 8 <<<<----
+        except Exception as outer_exc:
+            # Catch errors in the semaphore logic or the post-thread block itself
             print(
-                f"Job {job_id}: Uncaught exception in _process_locally main block: {main_exc}\n{traceback.format_exc()}")
-            if job_id in self.job_store and self.job_store[job_id]["status"] not in ["completed", "failed"]:
-                self.job_store[job_id]["status"] = "failed"
-                self.job_store[job_id]["result"] = f"Queue processing error: {str(main_exc)}"
+                f"Job {job_id}: >>> Exception in OUTER try/except: {outer_exc}\n{traceback.format_exc()} <<<")
+            # Ensure status reflects failure
+            self.job_store[job_id]["status"] = "failed"
+            self.job_store[job_id]["result"] = f"Queue manager error: {str(outer_exc)}"
 
         finally:
-            # ---->>>> LOGGING POINT 9 <<<<----
-            print(f"Job {job_id}: Entering _process_locally finally block.")
-            print(f"Job {job_id}: Releasing local semaphore.")
-            # Cleanup output file if path was set and valid
-            await self._cleanup_temp_files(job_id, output_path)
+            print(
+                f"Job {job_id}: >>> Releasing local semaphore (finally block). <<<")
+            # We won't clean up the output file in this test version
+            # await self._cleanup_temp_files(job_id, output_path_from_thread) # Keep cleanup commented out
 
     async def _process_replicate(self, job_id: str, job_data: dict):
         input_bytes = job_data["input_image_bytes"]
@@ -190,7 +159,6 @@ class QueueManager:
             self.job_store[job_id]["status"] = "failed"
             self.job_store[job_id]["result"] = "Replicate client not configured."
             print(f"Job {job_id}: Skipping Replicate - client not configured.")
-            # No files to clean up here as bytes were passed
             return
 
         try:
@@ -199,51 +167,37 @@ class QueueManager:
                 print(
                     f"Job {job_id}: Acquired Replicate semaphore. Starting Replicate processing.")
 
-                # --- Create temporary files from bytes for Replicate library ---
-                # Assuming suffix might matter for replicate based on original filename if available
-                # suffix = Path(job_data.get("input_image_filename", ".png")).suffix or '.png' # Example
                 input_fd, replicate_input_temp_path = tempfile.mkstemp(
-                    suffix=".png", dir=TEMP_DIR)  # Use appropriate suffix
+                    suffix=".png", dir=TEMP_DIR)
                 with os.fdopen(input_fd, 'wb') as f:
                     f.write(input_bytes)
                 print(
                     f"Job {job_id}: Wrote input bytes to temp file for Replicate: {replicate_input_temp_path}")
 
-                # suffix = Path(job_data.get("mask_image_filename", ".png")).suffix or '.png'
                 mask_fd, replicate_mask_temp_path = tempfile.mkstemp(
                     suffix=".png", dir=TEMP_DIR)
                 with os.fdopen(mask_fd, 'wb') as f:
                     f.write(mask_bytes)
                 print(
                     f"Job {job_id}: Wrote mask bytes to temp file for Replicate: {replicate_mask_temp_path}")
-                # --- End temp file creation ---
 
                 replicate_input_dict = {
                     "input_image": open(replicate_input_temp_path, "rb"),
                     "inpainting_mask": open(replicate_mask_temp_path, "rb"),
-                    "expression": job_data["expression"],
-                    "seed": job_data["seed"],
-                    "height": job_data["height"],
-                    "width": job_data["width"],
+                    "expression": job_data["expression"], "seed": job_data["seed"],
+                    "height": job_data["height"], "width": job_data["width"],
                     "subject_lora_scale": job_data["subject_lora_scale"],
                     "inpainting_lora_scale": job_data["inpainting_lora_scale"]
                 }
-
                 output = None
                 try:
-                    output = await asyncio.to_thread(
-                        self.replicate_client.run,
-                        REPLICATE_MODEL_ID,
-                        input=replicate_input_dict
-                    )
+                    output = await asyncio.to_thread(self.replicate_client.run, REPLICATE_MODEL_ID, input=replicate_input_dict)
                 finally:
-                    # Ensure files opened for replicate are closed
                     replicate_input_dict["input_image"].close()
                     replicate_input_dict["inpainting_mask"].close()
                     print(
                         f"Job {job_id}: Closed temp file handles passed to Replicate.")
 
-                # ... (rest of replicate processing: download, encode, update status) ...
                 if isinstance(output, list) and len(output) > 0 and isinstance(output[0], str):
                     image_url = output[0]
                     print(
@@ -264,17 +218,14 @@ class QueueManager:
             self.job_store[job_id]["result"] = f"Replicate processing error: {e}"
         finally:
             print(f"Job {job_id}: Releasing Replicate semaphore.")
-            # Cleanup the temporary files created *specifically* for Replicate
             await self._cleanup_temp_files(job_id, replicate_input_temp_path, replicate_mask_temp_path)
 
     async def submit_job(self, job_data: dict) -> str:
         job_id = str(uuid.uuid4())
         self.job_store[job_id] = {"status": "pending", "result": None}
         print(f"Job {job_id}: Submitted. Checking resources...")
-
         can_process_locally = not self.local_semaphore.locked(
         ) or self._local_count() < self._max_local
-
         if can_process_locally:
             print(f"Job {job_id}: Assigning to local processor.")
             asyncio.create_task(self._process_locally(job_id, job_data))
@@ -285,7 +236,6 @@ class QueueManager:
             print(
                 f"Job {job_id}: Local and Replicate busy/unavailable. Queued for local.")
             asyncio.create_task(self._process_locally(job_id, job_data))
-
         return job_id
 
     def _local_count(self):

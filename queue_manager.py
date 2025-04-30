@@ -9,6 +9,7 @@ import tempfile
 import traceback
 from PIL import Image as PILImage
 from predict import Predictor  # Assuming Predictor is accessible
+from concurrent.futures import ThreadPoolExecutor  # Import executor
 
 # Configuration
 MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", 1))
@@ -42,6 +43,9 @@ class QueueManager:
                 self.replicate_client = None
         else:
             print("Warning: REPLICATE_API_TOKEN not set. Replicate offloading disabled.")
+        # Create an executor (can be shared)
+        self.executor = ThreadPoolExecutor(
+            max_workers=self._max_local + 2)  # +2 for some buffer
 
     async def _cleanup_temp_files(self, job_id, *file_paths):
         for file_path in file_paths:
@@ -69,85 +73,104 @@ class QueueManager:
                     f"Failed processing image from Replicate URL {url}: {e}") from e
 
     async def _process_locally(self, job_id: str, job_data: dict):
-        print(f"Job {job_id}: >>> ENTERING SIMPLIFIED _process_locally <<<")
+        print(
+            f"Job {job_id}: >>> ENTERING _process_locally (using run_in_executor) <<<")
         output_path_from_thread = None
-        thread_exception = None
+        task_exception = None
 
         try:
             async with self.local_semaphore:
-                # Update status immediately to processing
-                self.job_store[job_id]["status"] = "processing_local_simplified"
+                # New status
+                self.job_store[job_id]["status"] = "processing_local_executor"
                 print(
-                    f"Job {job_id}: Acquired semaphore. Status -> processing_local_simplified.")
+                    f"Job {job_id}: Acquired semaphore. Status -> processing_local_executor.")
 
-                # --- Call Predictor ---
+                # --- Get the current event loop ---
+                loop = asyncio.get_running_loop()
+
+                # --- Call Predictor using run_in_executor ---
                 try:
-                    print(f"Job {job_id}: Calling asyncio.to_thread...")
-                    output_path_from_thread = await asyncio.to_thread(
-                        self.predictor.predict,
-                        # Pass necessary args
-                        input_image_bytes=job_data["input_image_bytes"],
-                        mask_image_bytes=job_data["mask_image_bytes"],
-                        expression=job_data["expression"],
-                        seed=job_data["seed"],
-                        height=job_data["height"],
-                        width=job_data["width"],
-                        subject_lora_scale=job_data["subject_lora_scale"],
-                        inpainting_lora_scale=job_data["inpainting_lora_scale"]
+                    print(f"Job {job_id}: Calling loop.run_in_executor...")
+                    # Pass predictor method and its arguments separately
+                    output_path_from_thread = await loop.run_in_executor(
+                        self.executor,  # Use the shared executor
+                        self.predictor.predict,  # The function to call
+                        # Arguments for predictor.predict:
+                        job_data["input_image_bytes"],
+                        job_data["mask_image_bytes"],
+                        job_data["expression"],
+                        job_data["seed"],
+                        job_data["height"],
+                        job_data["width"],
+                        job_data["subject_lora_scale"],
+                        job_data["inpainting_lora_scale"]
                     )
                     print(
-                        f"Job {job_id}: >>> Thread finished. Raw result: {output_path_from_thread} <<<")
+                        f"Job {job_id}: >>> run_in_executor call completed. Raw result: {output_path_from_thread} <<<")
+
+                except asyncio.CancelledError:
+                    # Explicitly catch CancelledError
+                    print(
+                        f"Job {job_id}: >>> Task was CANCELLED while awaiting executor. <<<")
+                    # Set status to failed on cancellation
+                    self.job_store[job_id]["status"] = "failed"
+                    self.job_store[job_id]["result"] = "Task cancelled during prediction."
+                    # Re-raise or handle as needed, here we just log and set status
+                    raise  # Re-raising might be useful for higher level handling if needed
 
                 except Exception as e:
                     print(
-                        f"Job {job_id}: >>> Exception IN thread: {e}\n{traceback.format_exc()} <<<")
-                    thread_exception = e
+                        f"Job {job_id}: >>> Exception IN executor task: {e}\n{traceback.format_exc()} <<<")
+                    task_exception = e
 
-                # --- VERY Basic Post-Thread Logic ---
-                # Check if we reach this point AT ALL
+                # --- Basic Post-Thread Logic ---
                 print(
-                    f"Job {job_id}: >>> Reached post-thread code block. Exception was: {thread_exception} <<<")
+                    f"Job {job_id}: >>> Reached post-executor code block. Exception was: {task_exception} <<<")
 
-                # Attempt a simple status update based ONLY on whether the thread threw an error
-                if thread_exception:
+                # Update status based ONLY on whether the executor task threw an error
+                # (Keep simplified logic for now)
+                if task_exception:
                     print(
-                        f"Job {job_id}: Attempting status update -> failed (thread error)")
+                        f"Job {job_id}: Attempting status update -> failed (executor error)")
                     self.job_store[job_id]["status"] = "failed"
                     self.job_store[job_id][
-                        "result"] = f"Predictor thread error: {str(thread_exception)}"
+                        "result"] = f"Predictor executor error: {str(task_exception)}"
                 elif output_path_from_thread and isinstance(output_path_from_thread, str):
-                    # If thread finished and returned a string path (don't check exists, don't read)
                     print(
-                        f"Job {job_id}: Attempting status update -> thread_finished_ok")
-                    # Use a distinct status to indicate this simplified success
-                    self.job_store[job_id]["status"] = "thread_finished_ok"
-                    # Store path as result
+                        f"Job {job_id}: Attempting status update -> executor_finished_ok")
+                    # Distinct status
+                    self.job_store[job_id]["status"] = "executor_finished_ok"
                     self.job_store[job_id][
                         "result"] = f"Predictor returned path: {output_path_from_thread}"
                 else:
-                    # Thread didn't error but didn't return a usable path
                     print(
-                        f"Job {job_id}: Attempting status update -> failed (bad thread result)")
+                        f"Job {job_id}: Attempting status update -> failed (bad executor result)")
                     self.job_store[job_id]["status"] = "failed"
                     self.job_store[job_id][
-                        "result"] = f"Predictor thread returned invalid result: {output_path_from_thread}"
+                        "result"] = f"Predictor executor returned invalid result: {output_path_from_thread}"
 
                 print(
-                    f"Job {job_id}: >>> Post-thread status update attempted. Final status should be '{self.job_store[job_id]['status']}' <<<")
+                    f"Job {job_id}: >>> Post-executor status update attempted. Final status should be '{self.job_store[job_id]['status']}' <<<")
+
+        except asyncio.CancelledError:
+            # Catch cancellation if it happens outside the executor await but within the semaphore
+            print(f"Job {job_id}: >>> Task was CANCELLED (outer try block). <<<")
+            if job_id in self.job_store:  # Ensure job exists before updating
+                self.job_store[job_id]["status"] = "failed"
+                self.job_store[job_id]["result"] = "Task cancelled during processing."
 
         except Exception as outer_exc:
-            # Catch errors in the semaphore logic or the post-thread block itself
             print(
                 f"Job {job_id}: >>> Exception in OUTER try/except: {outer_exc}\n{traceback.format_exc()} <<<")
-            # Ensure status reflects failure
-            self.job_store[job_id]["status"] = "failed"
-            self.job_store[job_id]["result"] = f"Queue manager error: {str(outer_exc)}"
+            if job_id in self.job_store:
+                self.job_store[job_id]["status"] = "failed"
+                self.job_store[job_id]["result"] = f"Queue manager error: {str(outer_exc)}"
 
         finally:
             print(
                 f"Job {job_id}: >>> Releasing local semaphore (finally block). <<<")
-            # We won't clean up the output file in this test version
-            # await self._cleanup_temp_files(job_id, output_path_from_thread) # Keep cleanup commented out
+            # Cleanup output file if path was valid (use output_path_from_thread)
+            await self._cleanup_temp_files(job_id, output_path_from_thread if not task_exception else None)
 
     async def _process_replicate(self, job_id: str, job_data: dict):
         input_bytes = job_data["input_image_bytes"]
@@ -190,8 +213,15 @@ class QueueManager:
                     "inpainting_lora_scale": job_data["inpainting_lora_scale"]
                 }
                 output = None
+                loop = asyncio.get_running_loop()  # Get loop for executor
                 try:
-                    output = await asyncio.to_thread(self.replicate_client.run, REPLICATE_MODEL_ID, input=replicate_input_dict)
+                    # Use run_in_executor for replicate call too
+                    output = await loop.run_in_executor(
+                        self.executor,  # Reuse executor
+                        self.replicate_client.run,
+                        REPLICATE_MODEL_ID,  # Ensure REPLICATE_MODEL_ID is defined
+                        replicate_input_dict  # input= dict is handled by run method
+                    )
                 finally:
                     replicate_input_dict["input_image"].close()
                     replicate_input_dict["inpainting_mask"].close()
@@ -243,3 +273,11 @@ class QueueManager:
 
     async def get_job_status(self, job_id: str) -> dict | None:
         return self.job_store.get(job_id)
+
+    # Add a cleanup method for the executor on shutdown if needed
+    async def shutdown(self):
+        print("Shutting down thread pool executor...")
+        self.executor.shutdown(wait=True)
+        print("Executor shut down.")
+
+# Consider calling queue_manager.shutdown() during application exit if possible

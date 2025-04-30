@@ -198,7 +198,7 @@ class Predictor(BasePredictor):
                        lora_weights=lora_weights, cond_size=768)
 
         # --- Flux Generation ---
-        flux_prompt = "put exact face on the body, if its fat, keep it fat, dont shrink"
+        flux_prompt = "put exact face on the body, match body skin tone"
         print(f"Using fixed Flux Prompt: {flux_prompt}")
 
         generator = torch.Generator(self.device).manual_seed(seed)

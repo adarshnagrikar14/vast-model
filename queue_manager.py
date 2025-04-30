@@ -15,6 +15,7 @@ MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", 1))
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 # Ensure you use the correct model identifier for your Replicate model
 REPLICATE_MODEL_ID = "adarshnagrikar14/manhwa-ai:0ed8ac8e28cfb050730eb3e1fbcbc9c60d7001e3a53931cc4f3c44cf08bab659"
+TEMP_DIR = "./tmp_job_files"  # Ensure consistency if used here
 
 
 class QueueManager:
@@ -47,7 +48,8 @@ class QueueManager:
             if file_path and os.path.exists(file_path):
                 try:
                     os.unlink(file_path)
-                    # print(f"Job {job_id}: Cleaned up temp file: {file_path}") # Optional: verbose logging
+                    # More verbose cleanup log
+                    print(f"Job {job_id}: Cleaned up temp file: {file_path}")
                 except Exception as e:
                     print(
                         f"Job {job_id}: Warning - failed to delete temp file {file_path}: {e}")
@@ -67,20 +69,21 @@ class QueueManager:
                     f"Failed processing image from Replicate URL {url}: {e}") from e
 
     async def _process_locally(self, job_id: str, job_data: dict):
-        input_path = job_data["input_image_path"]
-        mask_path = job_data["mask_image_path"]
-        output_path = None
+        # No input paths anymore
+        output_path = None  # Predictor still outputs a path
         try:
             async with self.local_semaphore:
                 self.job_store[job_id]["status"] = "processing_local"
                 print(
                     f"Job {job_id}: Acquired local semaphore. Starting local processing.")
 
-                # Run synchronous predictor in a separate thread
+                # Run synchronous predictor in a separate thread, passing bytes
                 output_path = await asyncio.to_thread(
                     self.predictor.predict,
-                    input_image=input_path,
-                    inpainting_mask=mask_path,
+                    # Pass bytes directly
+                    input_image_bytes=job_data["input_image_bytes"],
+                    mask_image_bytes=job_data["mask_image_bytes"],
+                    # Other parameters remain the same
                     expression=job_data["expression"],
                     seed=job_data["seed"],
                     height=job_data["height"],
@@ -92,7 +95,7 @@ class QueueManager:
                 print(
                     f"Job {job_id}: Local prediction finished. Output at {output_path}")
 
-                # Read result and encode
+                # Read result from predictor's output path and encode
                 with open(output_path, 'rb') as f:
                     image_bytes = f.read()
                 base64_result = base64.b64encode(image_bytes).decode('utf-8')
@@ -108,18 +111,21 @@ class QueueManager:
             self.job_store[job_id]["result"] = f"Local processing error: {e}"
         finally:
             print(f"Job {job_id}: Releasing local semaphore.")
-            # Cleanup input files and the temporary output file from predict
-            await self._cleanup_temp_files(job_id, input_path, mask_path, output_path)
+            # Only clean up the temporary *output* file from predict
+            # Input files are handled in app.py now
+            await self._cleanup_temp_files(job_id, output_path)
 
     async def _process_replicate(self, job_id: str, job_data: dict):
-        input_path = job_data["input_image_path"]
-        mask_path = job_data["mask_image_path"]
+        input_bytes = job_data["input_image_bytes"]
+        mask_bytes = job_data["mask_image_bytes"]
+        replicate_input_temp_path = None
+        replicate_mask_temp_path = None
+
         if not self.replicate_client:
-            # Should not happen if check is done before calling, but as safeguard
             self.job_store[job_id]["status"] = "failed"
             self.job_store[job_id]["result"] = "Replicate client not configured."
             print(f"Job {job_id}: Skipping Replicate - client not configured.")
-            await self._cleanup_temp_files(job_id, input_path, mask_path)
+            # No files to clean up here as bytes were passed
             return
 
         try:
@@ -128,11 +134,28 @@ class QueueManager:
                 print(
                     f"Job {job_id}: Acquired Replicate semaphore. Starting Replicate processing.")
 
-                # Prepare input for Replicate, needs files opened
-                # Use replicate library's file handling
-                replicate_input = {
-                    "input_image": open(input_path, "rb"),
-                    "inpainting_mask": open(mask_path, "rb"),
+                # --- Create temporary files from bytes for Replicate library ---
+                # Assuming suffix might matter for replicate based on original filename if available
+                # suffix = Path(job_data.get("input_image_filename", ".png")).suffix or '.png' # Example
+                input_fd, replicate_input_temp_path = tempfile.mkstemp(
+                    suffix=".png", dir=TEMP_DIR)  # Use appropriate suffix
+                with os.fdopen(input_fd, 'wb') as f:
+                    f.write(input_bytes)
+                print(
+                    f"Job {job_id}: Wrote input bytes to temp file for Replicate: {replicate_input_temp_path}")
+
+                # suffix = Path(job_data.get("mask_image_filename", ".png")).suffix or '.png'
+                mask_fd, replicate_mask_temp_path = tempfile.mkstemp(
+                    suffix=".png", dir=TEMP_DIR)
+                with os.fdopen(mask_fd, 'wb') as f:
+                    f.write(mask_bytes)
+                print(
+                    f"Job {job_id}: Wrote mask bytes to temp file for Replicate: {replicate_mask_temp_path}")
+                # --- End temp file creation ---
+
+                replicate_input_dict = {
+                    "input_image": open(replicate_input_temp_path, "rb"),
+                    "inpainting_mask": open(replicate_mask_temp_path, "rb"),
                     "expression": job_data["expression"],
                     "seed": job_data["seed"],
                     "height": job_data["height"],
@@ -141,18 +164,21 @@ class QueueManager:
                     "inpainting_lora_scale": job_data["inpainting_lora_scale"]
                 }
 
+                output = None
                 try:
-                    # Run prediction on Replicate - this is blocking, run in thread
                     output = await asyncio.to_thread(
                         self.replicate_client.run,
                         REPLICATE_MODEL_ID,
-                        input=replicate_input
+                        input=replicate_input_dict
                     )
                 finally:
                     # Ensure files opened for replicate are closed
-                    replicate_input["input_image"].close()
-                    replicate_input["inpainting_mask"].close()
+                    replicate_input_dict["input_image"].close()
+                    replicate_input_dict["inpainting_mask"].close()
+                    print(
+                        f"Job {job_id}: Closed temp file handles passed to Replicate.")
 
+                # ... (rest of replicate processing: download, encode, update status) ...
                 if isinstance(output, list) and len(output) > 0 and isinstance(output[0], str):
                     image_url = output[0]
                     print(
@@ -173,15 +199,14 @@ class QueueManager:
             self.job_store[job_id]["result"] = f"Replicate processing error: {e}"
         finally:
             print(f"Job {job_id}: Releasing Replicate semaphore.")
-            # Cleanup input files
-            await self._cleanup_temp_files(job_id, input_path, mask_path)
+            # Cleanup the temporary files created *specifically* for Replicate
+            await self._cleanup_temp_files(job_id, replicate_input_temp_path, replicate_mask_temp_path)
 
     async def submit_job(self, job_data: dict) -> str:
         job_id = str(uuid.uuid4())
         self.job_store[job_id] = {"status": "pending", "result": None}
         print(f"Job {job_id}: Submitted. Checking resources...")
 
-        # Check if local processing slot is available *without* waiting
         can_process_locally = not self.local_semaphore.locked(
         ) or self._local_count() < self._max_local
 
@@ -189,11 +214,9 @@ class QueueManager:
             print(f"Job {job_id}: Assigning to local processor.")
             asyncio.create_task(self._process_locally(job_id, job_data))
         elif self.replicate_client and not self.replicate_semaphore.locked():
-            # Local busy, try Replicate if configured and free
             print(f"Job {job_id}: Local busy, assigning to Replicate.")
             asyncio.create_task(self._process_replicate(job_id, job_data))
         else:
-            # Both busy or Replicate unavailable, queue for local (will wait for semaphore)
             print(
                 f"Job {job_id}: Local and Replicate busy/unavailable. Queued for local.")
             asyncio.create_task(self._process_locally(job_id, job_data))

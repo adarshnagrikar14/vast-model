@@ -1,14 +1,11 @@
 import os
 import torch
-import requests
 import io
-import base64
+from openai import OpenAI
 from dotenv import load_dotenv
 from PIL import Image as PILImage
 from huggingface_hub import login
-from openai import OpenAI
 from src.pipeline import FluxPipeline
-from cog import BasePredictor, Input, Path
 from src.lora_helper import set_single_lora, set_multi_lora, unset_lora
 from src.transformer_flux import FluxTransformer2DModel
 import tempfile
@@ -31,13 +28,7 @@ BASE_MODEL_PATH = "black-forest-labs/FLUX.1-dev"
 LORA_BASE_PATH = "./models"
 SUBJECT_LORA_FILENAME = "subject.safetensors"
 INPAINTING_LORA_FILENAME = "inpainting.safetensors"
-OUTPUT_FILENAME = "output.png"
-
-# --- Define Temp Dir (matching app.py) ---
-# Although predict only WRITES temp files, using the same dir might simplify debugging/permissions
 TEMP_DIR = "./tmp_job_files"
-# Ensure it exists (optional here, as app.py should create it, but safe)
-# os.makedirs(TEMP_DIR, exist_ok=True) # Not strictly needed if app.py runs first
 
 
 def clear_cache(transformer):
@@ -46,68 +37,7 @@ def clear_cache(transformer):
             attn_processor.bank_kv.clear()
 
 
-def edit_image_openai(client: OpenAI, input_image_path: str, edit_prompt: str) -> PILImage.Image | None:
-    """
-    Uses OpenAI's image edit API to modify an image, handling b64_json response.
-
-    Args:
-        client: Initialized OpenAI client.
-        input_image_path: Path to the input image file.
-        edit_prompt: The prompt describing the edit.
-
-    Returns:
-        A PIL Image object of the edited image, or None on error.
-    """
-    if not client:
-        print("Error: OpenAI client not configured. Set OPENAI_API_KEY.")
-        return None
-    try:
-        print(
-            f"Sending image '{input_image_path}' to OpenAI for editing with prompt: '{edit_prompt}'")
-        with open(input_image_path, "rb") as img_file:
-            response = client.images.edit(
-                model="gpt-image-1",
-                image=img_file,
-                prompt=edit_prompt,
-                n=1,
-                size="1024x1024",
-                quality="low",
-            )
-
-        # Extract Base64 encoded image data
-        b64_data = response.data[0].b64_json
-        if not b64_data:
-            print("Error: OpenAI response did not contain b64_json data.")
-            return None
-
-        print("Received b64_json data from OpenAI. Decoding...")
-
-        # Decode the Base64 string to bytes
-        image_bytes = base64.b64decode(b64_data)
-
-        # Create PIL image from bytes
-        edited_image_pil = PILImage.open(
-            io.BytesIO(image_bytes)).convert("RGB")
-        print("Successfully created PIL image from OpenAI b64_json response.")
-        return edited_image_pil
-
-    except FileNotFoundError:
-        print(f"Error: Input image file not found at {input_image_path}")
-        return None
-    except AttributeError:
-        print("Error: Could not find 'b64_json' in OpenAI response data.")
-        return None
-    except base64.binascii.Error as b64_error:
-        print(f"Error decoding Base64 data from OpenAI: {b64_error}")
-        return None
-    except Exception as e:
-        # Catch potential API errors from OpenAI library itself
-        print(
-            f"An error occurred during OpenAI image editing or processing: {e}")
-        return None
-
-
-class Predictor(BasePredictor):
+class Predictor:
     def setup(self):
         """Initializes the prediction pipeline and checks for LoRA files."""
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -153,47 +83,45 @@ class Predictor(BasePredictor):
 
     def predict(
         self,
-        input_image: str,           # Expect string path from queue manager
-        inpainting_mask: str,       # Expect string path from queue manager
-        expression: str = "happy",  # Default values should match queue manager's defaults
+        input_image_bytes: bytes,   # Expect bytes
+        mask_image_bytes: bytes,    # Expect bytes
+        expression: str = "happy",
         height: int = 768,
         width: int = 512,
         seed: int = 42,
         subject_lora_scale: float = 1.0,
         inpainting_lora_scale: float = 1.0
-    ) -> str:  # Return the path (string) to the generated file
+    ) -> str:  # Still returns path to the generated file
         """
         Generates an image using the Flux pipeline with specified LoRAs.
-        Assumes input_image is pre-processed (e.g., OpenAI edited) if necessary.
+        Accepts input images as bytes.
         Returns the path to a temporary output PNG file.
         """
         print(
-            f"Predictor received job: expr={expression}, seed={seed}, size={width}x{height}, subj_lora={subject_lora_scale}, inp_lora={inpainting_lora_scale}")
-        output_path_str = None  # Define here for potential use in logging errors
+            f"Predictor received job with bytes: expr={expression}, seed={seed}, size={width}x{height}, subj_lora={subject_lora_scale}, inp_lora={inpainting_lora_scale}")
+        output_path_str = None
 
         try:
-            # --- Load Input Images ---
-            # Input paths are now strings passed by the queue manager
+            # --- Load Input Images from Bytes ---
             try:
-                subject_image_pil = PILImage.open(input_image).convert("RGB")
-            except FileNotFoundError:
+                # Use io.BytesIO to allow PIL to read from memory buffer
+                subject_image_pil = PILImage.open(
+                    io.BytesIO(input_image_bytes)).convert("RGB")
                 print(
-                    f"FATAL ERROR PREDICT: Input subject file not found at path: {input_image}")
-                raise  # Re-raise specific error
+                    f"Loaded subject image from bytes ({len(input_image_bytes)} bytes).")
             except Exception as e:
+                # More specific error for byte loading failure
                 raise ValueError(
-                    f"Failed to load subject image {input_image}: {e}")
+                    f"Failed to load subject image from bytes: {e}")
 
             try:
                 inpainting_mask_pil = PILImage.open(
-                    inpainting_mask).convert("RGB")
-            except FileNotFoundError:
+                    io.BytesIO(mask_image_bytes)).convert("RGB")
                 print(
-                    f"FATAL ERROR PREDICT: Input mask file not found at path: {inpainting_mask}")
-                raise  # Re-raise specific error
+                    f"Loaded inpainting mask from bytes ({len(mask_image_bytes)} bytes).")
             except Exception as e:
                 raise ValueError(
-                    f"Failed to load inpainting mask {inpainting_mask}: {e}")
+                    f"Failed to load inpainting mask from bytes: {e}")
 
             # --- Prepare LoRA Data ---
             lora_paths = [self.subject_lora_path, self.inpainting_lora_path]
@@ -202,56 +130,48 @@ class Predictor(BasePredictor):
             spatial_images_pil = [inpainting_mask_pil]
 
             # --- Apply LoRAs and Generate ---
-            # Ensure clean state before applying
             unset_lora(self.pipe.transformer)
-            print(f"Applying LoRAs...")  # Simplified logging
-            # Assuming fixed cond_size
+            print(f"Applying LoRAs...")
             set_multi_lora(self.pipe.transformer, lora_paths,
                            lora_weights=lora_weights, cond_size=768)
 
-            flux_prompt = "put exact face on the body, match body skin tone"  # Fixed prompt
+            flux_prompt = "put exact face on the body, match body skin tone"
             print(f"Using Flux Prompt: '{flux_prompt}'")
             generator = torch.Generator(self.device).manual_seed(seed)
 
             print("Starting Flux pipeline generation...")
-            # Ensure pipeline arguments match expected names and types
             generated_pil_image = self.pipe(
                 prompt=flux_prompt,
                 height=height,
                 width=width,
-                guidance_scale=3.5,         # Keep fixed or make parameter if needed
-                num_inference_steps=25,     # Keep fixed or make parameter if needed
-                max_sequence_length=512,    # Keep fixed or make parameter if needed
+                guidance_scale=3.5,
+                num_inference_steps=25,
+                max_sequence_length=512,
                 generator=generator,
                 subject_images=subject_images_pil,
                 spatial_images=spatial_images_pil,
-                cond_size=768,              # Keep fixed or make parameter if needed
+                cond_size=768,
             ).images[0]
             print("Flux pipeline generation successful.")
 
             # --- Save Output Temporarily ---
-            # Use mkstemp to get a unique temporary file name in the defined TEMP_DIR
+            # Output saving still uses a temp file path
             output_fd, output_path_str = tempfile.mkstemp(
-                suffix=".png", prefix="flux_output_", dir=TEMP_DIR)  # Use TEMP_DIR
-            os.close(output_fd)  # Close the file descriptor
+                suffix=".png", prefix="flux_output_", dir=TEMP_DIR)
+            os.close(output_fd)
             generated_pil_image.save(output_path_str)
-            # Keep this log
             print(f"Predictor output saved temporarily to {output_path_str}")
-            return output_path_str  # Return the path as a string
+            return output_path_str
 
         except Exception as e:
             print(f"ERROR during prediction: {e}\n{traceback.format_exc()}")
-            # If output_path was created before error, log it for potential manual cleanup debug
             if output_path_str:
                 print(f"(Attempted output path was: {output_path_str})")
-            # Queue manager will handle cleanup of input files based on the exception
-            raise  # Re-raise the exception for the queue manager
+            raise
 
         finally:
             # --- Cleanup GPU state ---
-            # Always unset LoRA and clear cache, regardless of success/failure
             print("Unsetting LoRA and clearing cache.")
             unset_lora(self.pipe.transformer)
             clear_cache(self.pipe.transformer)
-            # NOTE: Cleanup of the output file (output_path_str) is now handled
-            # by the QueueManager after it reads the file or encounters an error.
+            # Output file cleanup is handled by QueueManager

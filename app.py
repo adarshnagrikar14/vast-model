@@ -4,6 +4,7 @@ from flask import Flask, request, jsonify
 from pathlib import Path
 import traceback
 import asyncio
+import io  # Import io for BytesIO
 from predict import Predictor
 from queue_manager import QueueManager  # Import the new manager
 
@@ -60,6 +61,8 @@ def index():
 async def generate():
     subject_temp_file_path = None
     mask_temp_file_path = None
+    subject_bytes = None
+    mask_bytes = None
 
     try:
         # --- Get Inputs and Save Temporarily ---
@@ -70,12 +73,30 @@ async def generate():
             return jsonify({'error': 'Missing "subject" image file.'}), 400
         subject_file = request.files['subject']
         subject_suffix = Path(subject_file.filename).suffix or '.png'
-        # Save with delete=False, manager will clean up
+        # Store original filename for context if needed
+        subject_filename = subject_file.filename
+
+        # Save temporarily to read content
         subject_temp_fd, subject_temp_file_path = tempfile.mkstemp(
             suffix=subject_suffix, dir=TEMP_DIR)
-        subject_file.save(subject_temp_file_path)
-        os.close(subject_temp_fd)  # Close descriptor after saving
-        print(f"Saved subject temp file: {subject_temp_file_path}")
+        try:
+            subject_file.save(subject_temp_file_path)
+            os.close(subject_temp_fd)  # Close descriptor
+            # Read into memory
+            with open(subject_temp_file_path, 'rb') as f:
+                subject_bytes = f.read()
+            print(
+                f"Read subject file '{subject_filename}' ({len(subject_bytes)} bytes) into memory.")
+        finally:
+            # Clean up temp file immediately after reading
+            if subject_temp_file_path and os.path.exists(subject_temp_file_path):
+                try:
+                    os.unlink(subject_temp_file_path)
+                    print(
+                        f"Deleted temporary subject file: {subject_temp_file_path}")
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to delete temp subject file {subject_temp_file_path}: {e}")
 
         if 'mask' not in request.files or not request.files['mask'].filename:
             # Clean up subject if mask is missing (before job submission)
@@ -92,46 +113,52 @@ async def generate():
             return jsonify({'error': 'Missing "mask" image file.'}), 400
         mask_file = request.files['mask']
         mask_suffix = Path(mask_file.filename).suffix or '.png'
-        # Use the defined TEMP_DIR
+        mask_filename = mask_file.filename
+
+        # Save temporarily to read content
         mask_temp_fd, mask_temp_file_path = tempfile.mkstemp(
             suffix=mask_suffix, dir=TEMP_DIR)
-        mask_file.save(mask_temp_file_path)
-        os.close(mask_temp_fd)
-        print(f"Saved mask temp file: {mask_temp_file_path}")
+        try:
+            mask_file.save(mask_temp_file_path)
+            os.close(mask_temp_fd)
+            # Read into memory
+            with open(mask_temp_file_path, 'rb') as f:
+                mask_bytes = f.read()
+            print(
+                f"Read mask file '{mask_filename}' ({len(mask_bytes)} bytes) into memory.")
+        finally:
+            # Clean up temp file immediately
+            if mask_temp_file_path and os.path.exists(mask_temp_file_path):
+                try:
+                    os.unlink(mask_temp_file_path)
+                    print(
+                        f"Deleted temporary mask file: {mask_temp_file_path}")
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to delete temp mask file {mask_temp_file_path}: {e}")
 
-        # --- Prepare Job Data ---
-        # Use defaults from predict.py or allow overrides from form data
+        # --- Prepare Job Data with Bytes ---
         try:
             job_data = {
-                "input_image_path": subject_temp_file_path,
-                "mask_image_path": mask_temp_file_path,
+                "input_image_bytes": subject_bytes,  # Pass bytes directly
+                "mask_image_bytes": mask_bytes,     # Pass bytes directly
                 "expression": expression,
                 "seed": int(request.form.get('seed', 42)),
                 "height": int(request.form.get('height', 768)),
                 "width": int(request.form.get('width', 512)),
                 "subject_lora_scale": float(request.form.get('subject_lora_scale', 1.0)),
                 "inpainting_lora_scale": float(request.form.get('inpainting_lora_scale', 1.0))
+                # Add original filenames if needed by predictor/replicate for context/typing
+                # "input_image_filename": subject_filename,
+                # "mask_image_filename": mask_filename,
             }
         except ValueError as e:
-            # Handle potential errors converting form data to int/float
-            # Clean up both files manually if job data prep fails
-            if subject_temp_file_path and os.path.exists(subject_temp_file_path):
-                try:
-                    os.unlink(subject_temp_file_path)
-                except Exception:
-                    pass  # Ignore cleanup error
-            if mask_temp_file_path and os.path.exists(mask_temp_file_path):
-                try:
-                    os.unlink(mask_temp_file_path)
-                except Exception:
-                    pass  # Ignore cleanup error
-            # await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path, mask_temp_file_path) # Removed
+            # Bytes are already read, no files to clean here
             return jsonify({'error': f'Invalid parameter format: {e}'}), 400
 
         # --- Submit Job to Queue Manager ---
-        # Don't log full temp paths here for brevity/security
         print(
-            f"Submitting job: expression={job_data['expression']}, seed={job_data['seed']}, size={job_data['width']}x{job_data['height']}")
+            f"Submitting job with image bytes: expression={job_data['expression']}, seed={job_data['seed']}, size={job_data['width']}x{job_data['height']}")
         job_id = await queue_manager.submit_job(job_data)
 
         # --- Return Job ID Immediately ---

@@ -151,13 +151,20 @@ class Predictor(BasePredictor):
             description="Width of the output image", default=512),
         seed: int = Input(description="Random seed", default=42),
         subject_lora_scale: float = Input(
-            description="Scale for the Subject LoRA weights", default=1.0, ge=0.0, le=2.0),
+            description="Scale for the Subject LoRA weights", default=1.1, ge=0.0, le=2.0),
         inpainting_lora_scale: float = Input(
-            description="Scale for the Inpainting LoRA weights", default=1.0, ge=0.0, le=2.0)
+            description="Scale for the Inpainting LoRA weights", default=1.18, ge=0.0, le=2.0)
     ) -> Path:
 
         # --- OpenAI Image Editing Step ---
-        openai_edit_prompt = f"crop face exactly, but make it digital illustration in manhwa {expression} style, same face structure"
+        openai_edit_prompt = f"""
+	Crop the face precisely and convert it into a digital illustration in {expression} style.
+	Maintain exact hair style and keep eyes open.
+	Pose with a slight rightward.
+	Slightly widen the face while preserving original structure and strong likeness.
+	Retain fine facial details—including lines and wrinkles (if present).
+	For K-pop style, apply smooth skin, stylized features, and expressive eyes while maintaining resemblance.
+	"""
         print(f"Constructed OpenAI Edit Prompt: {openai_edit_prompt}")
 
         openai_edited_image_pil = edit_image_openai(
@@ -188,10 +195,10 @@ class Predictor(BasePredictor):
         unset_lora(self.pipe.transformer)
         print(f"Applying LoRAs: {lora_paths} with weights {lora_weights}")
         set_multi_lora(self.pipe.transformer, lora_paths,
-                       lora_weights=lora_weights, cond_size=512)
+                       lora_weights=lora_weights, cond_size=768)
 
         # --- Flux Generation ---
-        flux_prompt = "put face on the body"
+        flux_prompt = "put exact face on the body, if its fat, keep it fat, dont shrink"
         print(f"Using fixed Flux Prompt: {flux_prompt}")
 
         generator = torch.Generator(self.device).manual_seed(seed)
@@ -203,12 +210,12 @@ class Predictor(BasePredictor):
                 height=height,
                 width=width,
                 guidance_scale=3.5,
-                num_inference_steps=25,
+                num_inference_steps=12,
                 max_sequence_length=512,
                 generator=generator,
                 subject_images=subject_images_pil,
                 spatial_images=spatial_images_pil,
-                cond_size=512,
+                cond_size=768,
             ).images[0]
             print("Flux pipeline generation successful.")
 

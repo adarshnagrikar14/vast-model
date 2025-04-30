@@ -73,7 +73,7 @@ def generate():
         output_path_predictor = predictor.predict(
             input_image=subject_path,
             inpainting_mask=mask_path,
-            expression=expression
+            expression=expression, seed=25, height  = 768, width = 512, subject_lora_scale=1.1, inpainting_lora_scale=1.18
         )
         print(f"Predictor returned output path: {output_path_predictor}")
 

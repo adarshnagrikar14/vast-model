@@ -143,7 +143,7 @@ class Predictor(BasePredictor):
             description="Inpainting mask image (white areas will be inpainted)"),
         expression: str = Input(
             description="Desired facial expression for the manhwa style (e.g., 'happy', 'angry', 'surprised', 'neutral')",
-            default="angry"
+            default="happy"
         ),
         height: int = Input(
             description="Height of the output image", default=768),
@@ -151,9 +151,9 @@ class Predictor(BasePredictor):
             description="Width of the output image", default=512),
         seed: int = Input(description="Random seed", default=42),
         subject_lora_scale: float = Input(
-            description="Scale for the Subject LoRA weights", default=1.1, ge=0.0, le=2.0),
+            description="Scale for the Subject LoRA weights", default=1.0, ge=0.0, le=2.0),
         inpainting_lora_scale: float = Input(
-            description="Scale for the Inpainting LoRA weights", default=1.18, ge=0.0, le=2.0)
+            description="Scale for the Inpainting LoRA weights", default=1.0, ge=0.0, le=2.0)
     ) -> Path:
 
         # --- OpenAI Image Editing Step ---
@@ -210,12 +210,12 @@ class Predictor(BasePredictor):
                 height=height,
                 width=width,
                 guidance_scale=3.5,
-                num_inference_steps=12,
+                num_inference_steps=20,
                 max_sequence_length=512,
                 generator=generator,
                 subject_images=subject_images_pil,
                 spatial_images=spatial_images_pil,
-                cond_size=768,
+                cond_size=512,
             ).images[0]
             print("Flux pipeline generation successful.")
 

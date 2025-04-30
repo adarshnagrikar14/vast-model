@@ -74,104 +74,136 @@ class QueueManager:
 
     async def _process_locally(self, job_id: str, job_data: dict):
         print(
-            f"Job {job_id}: >>> ENTERING _process_locally (using run_in_executor) <<<")
-        output_path_from_thread = None
+            f"Job {job_id}: >>> ENTERING _process_locally (using polling) <<<")
+        output_path = None
         task_exception = None
+        future = None  # Variable to hold the future object
 
         try:
             async with self.local_semaphore:
-                # New status
-                self.job_store[job_id]["status"] = "processing_local_executor"
+                self.job_store[job_id]["status"] = "processing_local_polling"
                 print(
-                    f"Job {job_id}: Acquired semaphore. Status -> processing_local_executor.")
+                    f"Job {job_id}: Acquired semaphore. Status -> processing_local_polling.")
 
-                # --- Get the current event loop ---
                 loop = asyncio.get_running_loop()
 
-                # --- Call Predictor using run_in_executor ---
+                # --- Submit predictor task to executor (don't await yet) ---
+                print(f"Job {job_id}: Submitting predictor task to executor...")
+                future = loop.run_in_executor(
+                    self.executor,
+                    self.predictor.predict,
+                    # Corrected args:
+                    job_data["input_image_bytes"],
+                    job_data["mask_image_bytes"],
+                    job_data["expression"],
+                    job_data["height"],
+                    job_data["width"],
+                    job_data["seed"],
+                    job_data["subject_lora_scale"],
+                    job_data["inpainting_lora_scale"]
+                )
+
+                # --- Poll the future until it's done ---
+                polling_interval = 0.5  # seconds
+                print(
+                    f"Job {job_id}: Polling executor future every {polling_interval}s...")
+                while not future.done():
+                    # Check for cancellation explicitly during polling
+                    try:
+                        # await asyncio.wait_for(asyncio.shield(future), timeout=polling_interval) # Alternative check
+                        await asyncio.sleep(polling_interval)  # Yield control
+                    except asyncio.CancelledError:
+                        print(
+                            f"Job {job_id}: >>> Task CANCELLED during polling sleep/wait. <<<")
+                        # Attempt to cancel the background future if it's still running
+                        if not future.done():
+                            print(
+                                f"Job {job_id}: Attempting to cancel background future...")
+                            future.cancel()
+                        # Set status and re-raise
+                        self.job_store[job_id]["status"] = "failed"
+                        self.job_store[job_id]["result"] = "Task cancelled during prediction polling."
+                        raise  # Propagate cancellation
+
+                # --- Future is done, get the result (or exception) ---
+                print(f"Job {job_id}: Executor future is done.")
                 try:
-                    print(f"Job {job_id}: Calling loop.run_in_executor...")
-                    loop = asyncio.get_running_loop()  # Ensure loop is defined here
-                    output_path_from_thread = await loop.run_in_executor(
-                        self.executor,
-                        self.predictor.predict,
-                        # --- CORRECTED ARGUMENT ORDER ---
-                        job_data["input_image_bytes"],      # 1
-                        job_data["mask_image_bytes"],       # 2
-                        job_data["expression"],             # 3
-                        job_data["height"],                 # 4 CORRECT
-                        job_data["width"],                  # 5 CORRECT
-                        job_data["seed"],                   # 6 CORRECT
-                        job_data["subject_lora_scale"],     # 7
-                        job_data["inpainting_lora_scale"]   # 8
-                        # --- END CORRECTED ORDER ---
-                    )
+                    output_path = future.result()  # This will raise exception if thread failed
                     print(
-                        f"Job {job_id}: >>> run_in_executor call completed. Raw result: {output_path_from_thread} <<<")
-
-                except asyncio.CancelledError:
-                    # Explicitly catch CancelledError
-                    print(
-                        f"Job {job_id}: >>> Task was CANCELLED while awaiting executor. <<<")
-                    # Set status to failed on cancellation
-                    self.job_store[job_id]["status"] = "failed"
-                    self.job_store[job_id]["result"] = "Task cancelled during prediction."
-                    # Re-raise or handle as needed, here we just log and set status
-                    raise  # Re-raising might be useful for higher level handling if needed
-
+                        f"Job {job_id}: >>> future.result() succeeded. Raw result: {output_path} <<<")
                 except Exception as e:
+                    # Exception came from the predictor thread itself
                     print(
-                        f"Job {job_id}: >>> Exception IN executor task: {e}\n{traceback.format_exc()} <<<")
+                        f"Job {job_id}: >>> Exception retrieved from future.result(): {e}\n{traceback.format_exc()} <<<")
                     task_exception = e
 
-                # --- Basic Post-Thread Logic ---
+                # --- Process Result and Update Status (Simplified Logic is Fine Here) ---
                 print(
-                    f"Job {job_id}: >>> Reached post-executor code block. Exception was: {task_exception} <<<")
+                    f"Job {job_id}: >>> Reached post-polling code block. Exception was: {task_exception} <<<")
 
-                # Update status based ONLY on whether the executor task threw an error
-                # (Keep simplified logic for now)
                 if task_exception:
                     print(
-                        f"Job {job_id}: Attempting status update -> failed (executor error)")
+                        f"Job {job_id}: Attempting status update -> failed (predictor error)")
                     self.job_store[job_id]["status"] = "failed"
                     self.job_store[job_id][
-                        "result"] = f"Predictor executor error: {str(task_exception)}"
-                elif output_path_from_thread and isinstance(output_path_from_thread, str):
+                        "result"] = f"Predictor error: {str(task_exception)}"
+                elif output_path and isinstance(output_path, str) and os.path.exists(output_path):
+                    # <<< MODIFICATION: Use the original successful processing logic >>>
                     print(
-                        f"Job {job_id}: Attempting status update -> executor_finished_ok")
-                    # Distinct status
-                    self.job_store[job_id]["status"] = "executor_finished_ok"
-                    self.job_store[job_id][
-                        "result"] = f"Predictor returned path: {output_path_from_thread}"
+                        f"Job {job_id}: Predictor success. Proceeding with post-processing for path: {output_path}")
+                    try:
+                        print(
+                            f"Job {job_id}: Reading output file: {output_path}")
+                        with open(output_path, 'rb') as f:
+                            image_bytes = f.read()
+                        print(f"Job {job_id}: Read {len(image_bytes)} bytes.")
+                        print(f"Job {job_id}: Base64 encoding...")
+                        base64_result = base64.b64encode(
+                            image_bytes).decode('utf-8')
+                        print(f"Job {job_id}: Base64 done.")
+                        print(f"Job {job_id}: Updating status to 'completed'.")
+                        self.job_store[job_id]["status"] = "completed"
+                        self.job_store[job_id]["result"] = base64_result
+                        print(f"Job {job_id}: Status updated to 'completed'.")
+                    except Exception as post_proc_exc:
+                        print(
+                            f"Job {job_id}: Exception during post-processing: {post_proc_exc}\n{traceback.format_exc()}")
+                        self.job_store[job_id]["status"] = "failed"
+                        self.job_store[job_id][
+                            "result"] = f"Post-processing error: {str(post_proc_exc)}"
+                    # <<< END MODIFICATION >>>
                 else:
+                    # Predictor finished but path is bad
+                    result_str = str(output_path) if output_path else "None"
                     print(
-                        f"Job {job_id}: Attempting status update -> failed (bad executor result)")
+                        f"Job {job_id}: Attempting status update -> failed (bad predictor result: {result_str})")
                     self.job_store[job_id]["status"] = "failed"
                     self.job_store[job_id][
-                        "result"] = f"Predictor executor returned invalid result: {output_path_from_thread}"
+                        "result"] = f"Predictor returned invalid result: {result_str}"
+                    output_path = None  # Prevent cleanup error
 
                 print(
-                    f"Job {job_id}: >>> Post-executor status update attempted. Final status should be '{self.job_store[job_id]['status']}' <<<")
+                    f"Job {job_id}: >>> Post-polling status update finished. Status should be '{self.job_store[job_id]['status']}' <<<")
 
         except asyncio.CancelledError:
-            # Catch cancellation if it happens outside the executor await but within the semaphore
-            print(f"Job {job_id}: >>> Task was CANCELLED (outer try block). <<<")
-            if job_id in self.job_store:  # Ensure job exists before updating
+            print(
+                f"Job {job_id}: >>> Task was CANCELLED (outer try block). <<<")
+            if job_id in self.job_store and self.job_store[job_id]["status"] not in ["completed", "failed"]:
                 self.job_store[job_id]["status"] = "failed"
                 self.job_store[job_id]["result"] = "Task cancelled during processing."
 
         except Exception as outer_exc:
             print(
                 f"Job {job_id}: >>> Exception in OUTER try/except: {outer_exc}\n{traceback.format_exc()} <<<")
-            if job_id in self.job_store:
+            if job_id in self.job_store and self.job_store[job_id]["status"] not in ["completed", "failed"]:
                 self.job_store[job_id]["status"] = "failed"
                 self.job_store[job_id]["result"] = f"Queue manager error: {str(outer_exc)}"
 
         finally:
             print(
                 f"Job {job_id}: >>> Releasing local semaphore (finally block). <<<")
-            # Cleanup output file if path was valid (use output_path_from_thread)
-            await self._cleanup_temp_files(job_id, output_path_from_thread if not task_exception else None)
+            # Cleanup output file if path was set correctly and no exception happened in thread
+            await self._cleanup_temp_files(job_id, output_path if not task_exception else None)
 
     async def _process_replicate(self, job_id: str, job_data: dict):
         input_bytes = job_data["input_image_bytes"]
@@ -214,14 +246,14 @@ class QueueManager:
                     "inpainting_lora_scale": job_data["inpainting_lora_scale"]
                 }
                 output = None
-                loop = asyncio.get_running_loop()  # Get loop for executor
+                loop = asyncio.get_running_loop()
                 try:
-                    # Use run_in_executor for replicate call too
+                    # Using executor for replicate too, can switch back to to_thread if preferred
                     output = await loop.run_in_executor(
-                        self.executor,  # Reuse executor
+                        self.executor,
                         self.replicate_client.run,
-                        REPLICATE_MODEL_ID,  # Ensure REPLICATE_MODEL_ID is defined
-                        replicate_input_dict  # input= dict is handled by run method
+                        REPLICATE_MODEL_ID,
+                        replicate_input_dict
                     )
                 finally:
                     replicate_input_dict["input_image"].close()

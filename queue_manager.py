@@ -10,6 +10,9 @@ import traceback
 from PIL import Image as PILImage
 from predict import Predictor  # Assuming Predictor is accessible
 from concurrent.futures import ThreadPoolExecutor  # Import executor
+import threading
+import queue
+import time
 
 # Configuration
 MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", 1))
@@ -17,6 +20,20 @@ REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 # Ensure you use the correct model identifier for your Replicate model
 REPLICATE_MODEL_ID = "adarshnagrikar14/manhwa-ai:0ed8ac8e28cfb050730eb3e1fbcbc9c60d7001e3a53931cc4f3c44cf08bab659"
 TEMP_DIR = "./tmp_job_files"  # Ensure consistency if used here
+
+job_queue: queue.Queue[tuple[str, dict]] = queue.Queue()
+
+
+def worker_loop():
+    while True:
+        job_id, job_data = job_queue.get()
+        try:
+            QueueManager._really_run_job(job_id, job_data)   # new helper
+        finally:
+            job_queue.task_done()
+
+
+threading.Thread(target=worker_loop, daemon=True).start()
 
 
 class QueueManager:
@@ -283,22 +300,10 @@ class QueueManager:
             print(f"Job {job_id}: Releasing Replicate semaphore.")
             await self._cleanup_temp_files(job_id, replicate_input_temp_path, replicate_mask_temp_path)
 
-    async def submit_job(self, job_data: dict) -> str:
+    def submit_job(self, job_data):
         job_id = str(uuid.uuid4())
-        self.job_store[job_id] = {"status": "pending", "result": None}
-        print(f"Job {job_id}: Submitted. Checking resources...")
-        can_process_locally = not self.local_semaphore.locked(
-        ) or self._local_count() < self._max_local
-        if can_process_locally:
-            print(f"Job {job_id}: Assigning to local processor.")
-            asyncio.create_task(self._process_locally(job_id, job_data))
-        elif self.replicate_client and not self.replicate_semaphore.locked():
-            print(f"Job {job_id}: Local busy, assigning to Replicate.")
-            asyncio.create_task(self._process_replicate(job_id, job_data))
-        else:
-            print(
-                f"Job {job_id}: Local and Replicate busy/unavailable. Queued for local.")
-            asyncio.create_task(self._process_locally(job_id, job_data))
+        self.job_store[job_id] = {"status": "queued", "result": None}
+        job_queue.put((job_id, job_data))
         return job_id
 
     def _local_count(self):
@@ -312,5 +317,10 @@ class QueueManager:
         print("Shutting down thread pool executor...")
         self.executor.shutdown(wait=True)
         print("Executor shut down.")
+
+    def _really_run_job(self, job_id: str, job_data: dict):
+        # This method is now synchronous and does not use asyncio
+        # Implement the logic to process the job
+        pass
 
 # Consider calling queue_manager.shutdown() during application exit if possible

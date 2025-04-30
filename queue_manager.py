@@ -70,64 +70,100 @@ class QueueManager:
 
     async def _process_locally(self, job_id: str, job_data: dict):
         output_path = None
+        predictor_exception = None  # Variable to store exception from thread
+
         try:
             async with self.local_semaphore:
                 self.job_store[job_id]["status"] = "processing_local"
                 print(
                     f"Job {job_id}: Acquired local semaphore. Starting local processing.")
 
-                output_path = await asyncio.to_thread(
-                    self.predictor.predict,
-                    # Pass bytes directly
-                    input_image_bytes=job_data["input_image_bytes"],
-                    mask_image_bytes=job_data["mask_image_bytes"],
-                    # Other parameters
-                    expression=job_data["expression"],
-                    seed=job_data["seed"],
-                    height=job_data["height"],
-                    width=job_data["width"],
-                    subject_lora_scale=job_data["subject_lora_scale"],
-                    inpainting_lora_scale=job_data["inpainting_lora_scale"]
-                )
+                # --- Call Predictor ---
+                try:
+                    output_path = await asyncio.to_thread(
+                        self.predictor.predict,
+                        input_image_bytes=job_data["input_image_bytes"],
+                        mask_image_bytes=job_data["mask_image_bytes"],
+                        expression=job_data["expression"],
+                        seed=job_data["seed"],
+                        height=job_data["height"],
+                        width=job_data["width"],
+                        subject_lora_scale=job_data["subject_lora_scale"],
+                        inpainting_lora_scale=job_data["inpainting_lora_scale"]
+                    )
+                    print(
+                        f"Job {job_id}: Predictor thread finished. Returned path: {output_path}")
+                except Exception as pred_exc:
+                    # Catch exception *from the predictor thread*
+                    predictor_exception = pred_exc
+                    print(
+                        f"Job {job_id}: Predictor thread raised an exception: {pred_exc}\n{traceback.format_exc()}")
+                    # Don't re-raise yet, let the main block handle status update
 
-                # --- Start Detailed Logging for Status Update ---
-                print(
-                    f"Job {job_id}: Predictor thread finished. Returned output path: {output_path}")
+                # --- Process Result and Update Status ---
+                # This block runs *after* the thread finishes or raises an exception
 
-                if not output_path or not os.path.exists(output_path):
-                    raise FileNotFoundError(
-                        f"Predictor returned invalid path or file missing: {output_path}")
+                if predictor_exception:
+                    # If the predictor itself failed, update status to failed now
+                    print(
+                        f"Job {job_id}: Setting status to failed due to predictor exception.")
+                    self.job_store[job_id]["status"] = "failed"
+                    self.job_store[job_id]["result"] = f"Predictor error: {str(predictor_exception)}"
 
-                print(
-                    f"Job {job_id}: Attempting to read output file: {output_path}")
-                with open(output_path, 'rb') as f:
-                    image_bytes = f.read()
-                print(
-                    f"Job {job_id}: Successfully read {len(image_bytes)} bytes from output file.")
+                elif not output_path or not os.path.exists(output_path):
+                    # If predictor didn't fail but path is bad
+                    print(
+                        f"Job {job_id}: Predictor returned invalid/missing path: {output_path}. Setting status to failed.")
+                    self.job_store[job_id]["status"] = "failed"
+                    self.job_store[job_id][
+                        "result"] = f"Predictor returned invalid path: {output_path}"
+                    # Set output_path to None to prevent cleanup error
+                    output_path = None
 
-                print(f"Job {job_id}: Attempting to Base64 encode image bytes.")
-                base64_result = base64.b64encode(image_bytes).decode('utf-8')
-                print(f"Job {job_id}: Base64 encoding successful.")
+                else:
+                    # Predictor succeeded and path looks okay, try reading/encoding/updating
+                    try:
+                        print(
+                            f"Job {job_id}: Attempting to read output file: {output_path}")
+                        with open(output_path, 'rb') as f:
+                            image_bytes = f.read()
+                        print(
+                            f"Job {job_id}: Successfully read {len(image_bytes)} bytes from output file.")
 
-                print(
-                    f"Job {job_id}: Updating job store status to 'completed'.")
-                self.job_store[job_id]["status"] = "completed"
-                self.job_store[job_id]["result"] = base64_result
-                print(
-                    f"Job {job_id}: Local processing completed successfully. Status updated.")
-                # --- End Detailed Logging ---
+                        print(
+                            f"Job {job_id}: Attempting to Base64 encode image bytes.")
+                        base64_result = base64.b64encode(
+                            image_bytes).decode('utf-8')
+                        print(f"Job {job_id}: Base64 encoding successful.")
 
-        except Exception as e:
+                        print(
+                            f"Job {job_id}: Updating job store status to 'completed'.")
+                        self.job_store[job_id]["status"] = "completed"
+                        self.job_store[job_id]["result"] = base64_result
+                        print(
+                            f"Job {job_id}: Local processing completed successfully. Status updated.")
+
+                    except Exception as post_proc_exc:
+                        # Catch error during file read, encode, or status update itself
+                        print(
+                            f"Job {job_id}: Error during post-processing/status update: {post_proc_exc}\n{traceback.format_exc()}")
+                        self.job_store[job_id]["status"] = "failed"
+                        self.job_store[job_id][
+                            "result"] = f"Post-processing error: {str(post_proc_exc)}"
+
+        except Exception as main_exc:
+            # Catch unexpected errors in the main async logic (e.g., semaphore issues)
             print(
-                f"Job {job_id}: Local processing failed: {e}\n{traceback.format_exc()}")
-            # Ensure status is updated even on failure
-            self.job_store[job_id]["status"] = "failed"
-            # Store the error message in result for polling
-            self.job_store[job_id]["result"] = f"Local processing error: {str(e)}"
-            print(f"Job {job_id}: Status updated to 'failed'.")
+                f"Job {job_id}: Uncaught exception in _process_locally main block: {main_exc}\n{traceback.format_exc()}")
+            # Ensure status is marked as failed if not already set
+            if job_id in self.job_store and self.job_store[job_id]["status"] not in ["completed", "failed"]:
+                self.job_store[job_id]["status"] = "failed"
+                self.job_store[job_id]["result"] = f"Queue processing error: {str(main_exc)}"
+
         finally:
             print(f"Job {job_id}: Releasing local semaphore.")
-            # Cleanup the temporary *output* file from predict
+            # Cleanup the temporary *output* file from predict if path is valid
+            # output_path might be None if predictor failed early
             await self._cleanup_temp_files(job_id, output_path)
 
     async def _process_replicate(self, job_id: str, job_data: dict):

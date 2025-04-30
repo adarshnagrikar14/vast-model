@@ -129,19 +129,44 @@ async def generate():
     try:
         expression = request.form.get('expression', 'happy')
 
-        # --- Handle Subject Image (Save Temporarily for OpenAI) ---
+        # --- Handle Subject Image (Save Temporarily, Convert to PNG if needed) ---
         if 'subject' not in request.files or not request.files['subject'].filename:
             return jsonify({'error': 'Missing "subject" image file.'}), 400
         subject_file = request.files['subject']
-        subject_suffix = Path(subject_file.filename).suffix or '.png'
+        # Ensure lower case for check
+        subject_suffix = Path(subject_file.filename).suffix.lower()
         subject_filename = subject_file.filename
+        subject_needs_conversion = subject_suffix not in [
+            '.png']  # Check if not PNG
 
-        subject_temp_fd, subject_temp_file_path = tempfile.mkstemp(
+        # Save original temporarily
+        original_temp_fd, original_temp_path = tempfile.mkstemp(
             suffix=subject_suffix, dir=TEMP_DIR)
-        subject_file.save(subject_temp_file_path)
-        os.close(subject_temp_fd)
+        subject_file.save(original_temp_path)
+        os.close(original_temp_fd)
         print(
-            f"Saved original subject '{subject_filename}' to temp file: {subject_temp_file_path}")
+            f"Saved original subject '{subject_filename}' to temp file: {original_temp_path}")
+
+        openai_input_path = original_temp_path
+        png_temp_path = None  # Path for converted PNG if created
+
+        # Convert to PNG if necessary for OpenAI
+        if subject_needs_conversion and openai_client:  # Only convert if needed and client exists
+            try:
+                print(
+                    f"Converting subject '{subject_filename}' to PNG for OpenAI...")
+                img = PILImage.open(original_temp_path)
+                # Create a new temp file path for the PNG version
+                png_fd, png_temp_path = tempfile.mkstemp(
+                    suffix=".png", dir=TEMP_DIR)
+                os.close(png_fd)  # Close descriptor immediately
+                img.save(png_temp_path, format='PNG')
+                openai_input_path = png_temp_path  # Use the PNG path for OpenAI
+                print(f"Saved PNG version for OpenAI to: {png_temp_path}")
+            except Exception as conv_e:
+                print(
+                    f"Warning: Failed to convert subject to PNG: {conv_e}. OpenAI edit will likely fail.")
+                # Keep openai_input_path as the original, let OpenAI fail explicitly
 
         # --- OpenAI Editing Step ---
         openai_edit_prompt = f"""
@@ -151,42 +176,44 @@ async def generate():
         Retain fine facial details—including lines and wrinkles (if present).
         For K-pop style, apply smooth skin, stylized features, and expressive eyes while maintaining resemblance.
         """
-        print(
-            f"Constructed OpenAI Edit Prompt (Expression: {expression})")  # Simplified log
+        print(f"Constructed OpenAI Edit Prompt (Expression: {expression})")
 
+        # Use the potentially converted PNG path for OpenAI
         edited_subject_pil = edit_image_openai(
-            openai_client, subject_temp_file_path, openai_edit_prompt)
+            openai_client, openai_input_path, openai_edit_prompt)
 
-        # Load final subject bytes (either edited or original)
+        # Load final subject bytes (edited or original)
+        # Default to original if edit fails/skipped
+        final_subject_bytes_source_path = original_temp_path
         if edited_subject_pil:
             print("OpenAI edit successful. Converting edited PIL to bytes.")
-            # Convert edited PIL image to bytes
             img_byte_arr = io.BytesIO()
             edited_subject_pil.save(
                 img_byte_arr, format='PNG')  # Save as PNG bytes
             subject_bytes = img_byte_arr.getvalue()
             print(f"Converted edited image to {len(subject_bytes)} bytes.")
-            # Optionally save the edited image temporarily if needed elsewhere, remember to clean up
-            # edit_fd, openai_edited_temp_path = tempfile.mkstemp(suffix=".png", dir=TEMP_DIR)
-            # edited_subject_pil.save(openai_edited_temp_path)
-            # os.close(edit_fd)
+            # No need to read from file if we have PIL object
         else:
             print("OpenAI edit skipped or failed. Using original subject image bytes.")
-            # Read the original image bytes if OpenAI failed/skipped
-            with open(subject_temp_file_path, 'rb') as f:
+            with open(final_subject_bytes_source_path, 'rb') as f:
                 subject_bytes = f.read()
             print(
                 f"Read original subject file ({len(subject_bytes)} bytes) into memory.")
 
-        # Clean up the original subject temp file now
-        if subject_temp_file_path and os.path.exists(subject_temp_file_path):
+        # --- Cleanup Temporary Subject Files ---
+        if original_temp_path and os.path.exists(original_temp_path):
             try:
-                os.unlink(subject_temp_file_path)
-                print(
-                    f"Deleted original subject temp file: {subject_temp_file_path}")
+                os.unlink(original_temp_path)
             except Exception as e:
                 print(
-                    f"Warning: Failed to delete original subject temp file {subject_temp_file_path}: {e}")
+                    f"Warning: Failed to delete original temp file {original_temp_path}: {e}")
+        # Clean up converted PNG if it exists
+        if png_temp_path and os.path.exists(png_temp_path):
+            try:
+                os.unlink(png_temp_path)
+            except Exception as e:
+                print(
+                    f"Warning: Failed to delete converted PNG temp file {png_temp_path}: {e}")
 
         # --- Handle Mask Image (Read Bytes directly) ---
         if 'mask' not in request.files or not request.files['mask'].filename:

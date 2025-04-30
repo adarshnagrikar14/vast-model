@@ -69,21 +69,19 @@ class QueueManager:
                     f"Failed processing image from Replicate URL {url}: {e}") from e
 
     async def _process_locally(self, job_id: str, job_data: dict):
-        # No input paths anymore
-        output_path = None  # Predictor still outputs a path
+        output_path = None
         try:
             async with self.local_semaphore:
                 self.job_store[job_id]["status"] = "processing_local"
                 print(
                     f"Job {job_id}: Acquired local semaphore. Starting local processing.")
 
-                # Run synchronous predictor in a separate thread, passing bytes
                 output_path = await asyncio.to_thread(
                     self.predictor.predict,
                     # Pass bytes directly
                     input_image_bytes=job_data["input_image_bytes"],
                     mask_image_bytes=job_data["mask_image_bytes"],
-                    # Other parameters remain the same
+                    # Other parameters
                     expression=job_data["expression"],
                     seed=job_data["seed"],
                     height=job_data["height"],
@@ -92,27 +90,44 @@ class QueueManager:
                     inpainting_lora_scale=job_data["inpainting_lora_scale"]
                 )
 
+                # --- Start Detailed Logging for Status Update ---
                 print(
-                    f"Job {job_id}: Local prediction finished. Output at {output_path}")
+                    f"Job {job_id}: Predictor thread finished. Returned output path: {output_path}")
 
-                # Read result from predictor's output path and encode
+                if not output_path or not os.path.exists(output_path):
+                    raise FileNotFoundError(
+                        f"Predictor returned invalid path or file missing: {output_path}")
+
+                print(
+                    f"Job {job_id}: Attempting to read output file: {output_path}")
                 with open(output_path, 'rb') as f:
                     image_bytes = f.read()
-                base64_result = base64.b64encode(image_bytes).decode('utf-8')
+                print(
+                    f"Job {job_id}: Successfully read {len(image_bytes)} bytes from output file.")
 
+                print(f"Job {job_id}: Attempting to Base64 encode image bytes.")
+                base64_result = base64.b64encode(image_bytes).decode('utf-8')
+                print(f"Job {job_id}: Base64 encoding successful.")
+
+                print(
+                    f"Job {job_id}: Updating job store status to 'completed'.")
                 self.job_store[job_id]["status"] = "completed"
                 self.job_store[job_id]["result"] = base64_result
-                print(f"Job {job_id}: Local processing completed successfully.")
+                print(
+                    f"Job {job_id}: Local processing completed successfully. Status updated.")
+                # --- End Detailed Logging ---
 
         except Exception as e:
             print(
                 f"Job {job_id}: Local processing failed: {e}\n{traceback.format_exc()}")
+            # Ensure status is updated even on failure
             self.job_store[job_id]["status"] = "failed"
-            self.job_store[job_id]["result"] = f"Local processing error: {e}"
+            # Store the error message in result for polling
+            self.job_store[job_id]["result"] = f"Local processing error: {str(e)}"
+            print(f"Job {job_id}: Status updated to 'failed'.")
         finally:
             print(f"Job {job_id}: Releasing local semaphore.")
-            # Only clean up the temporary *output* file from predict
-            # Input files are handled in app.py now
+            # Cleanup the temporary *output* file from predict
             await self._cleanup_temp_files(job_id, output_path)
 
     async def _process_replicate(self, job_id: str, job_data: dict):

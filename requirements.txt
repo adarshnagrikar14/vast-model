@@ -19,3 +19,8 @@ huggingface_hub
 google-api-core
 accelerate
 openai
+flask
+python-dotenv
+replicate
+aiohttp
+uvicorn

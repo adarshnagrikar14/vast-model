@@ -1,176 +1,156 @@
 import os
 import tempfile
-from flask import Flask, request, send_file, jsonify
-from predict import Predictor
+from flask import Flask, request, jsonify
 from pathlib import Path
-import traceback  # Import traceback for detailed error logging
-import base64  # Add base64 import
+import traceback
+import asyncio
+from predict import Predictor
+from queue_manager import QueueManager  # Import the new manager
 
 app = Flask(__name__)
 
-# Initialize the predictor
+# --- Initialization ---
+print("Initializing Predictor...")
 predictor = Predictor()
-predictor.setup()
+predictor.setup()  # Assuming setup is synchronous and relatively fast
+print("Initializing QueueManager...")
+# Pass the predictor instance to the manager
+queue_manager = QueueManager(predictor)
+print("Initialization complete. Starting Flask app...")
+
+# --- Routes ---
 
 
 @app.route('/')
 def index():
+    # Simplified index for clarity
     return jsonify({
         "status": "online",
-        "endpoint": "/generate",
-        "method": "POST",
-        "description": "Generate image using form data based on subject, mask, and expression.",
-        "parameters": {
-            "subject": "Input image file for subject conditioning.",
-            "mask": "Inpainting mask image file (white areas will be inpainted).",
-            "expression": "Desired facial expression for the manhwa style (e.g., 'happy', 'angry', 'surprised', 'neutral', default: 'angry')."
-        },
-        "example_curl": 'curl -X POST http://localhost:8000/generate -F "subject=@/path/to/subject.png" -F "mask=@/path/to/mask.png" -F "expression=happy" --output result.png'
+        "message": "Manhwa AI Generation Service",
+        "endpoints": {
+            "submit_job": {
+                "path": "/generate",
+                "method": "POST",
+                "description": "Submit image generation job (form data: subject, mask, expression, [optional params])",
+                "response": "{'job_id': '...', 'status': 'submitted'}"
+            },
+            "check_status": {
+                "path": "/queue/<job_id>",
+                "method": "GET",
+                "description": "Check job status and get result",
+                "response": "{'job_id': '...', 'status': 'pending|processing_local|processing_replicate|completed|failed', ['image_base64': '...', 'error_message': '...']}"
+            }
+        }
     })
+
+# Make generate async
 
 
 @app.route('/generate', methods=['POST'])
-def generate():
-    subject_temp_file = None
-    mask_temp_file = None
-    # output_temp_file = None # No longer needed for response, only for predictor output handling
+async def generate():
+    subject_temp_file_path = None
+    mask_temp_file_path = None
 
     try:
-        # --- Get Inputs ---
-        # Expression
-        # Default to 'angry' if not provided
-        expression = request.form.get('expression', 'angry')
+        # --- Get Inputs and Save Temporarily ---
+        expression = request.form.get(
+            'expression', 'happy')  # Default defined here
 
-        # Subject Image
         if 'subject' not in request.files or not request.files['subject'].filename:
-            return jsonify({'error': 'Missing "subject" image file in form data.'}), 400
+            return jsonify({'error': 'Missing "subject" image file.'}), 400
         subject_file = request.files['subject']
-        # Keep original extension if possible
         subject_suffix = Path(subject_file.filename).suffix or '.png'
-        subject_temp_file = tempfile.NamedTemporaryFile(
-            delete=False, suffix=subject_suffix)
-        subject_file.save(subject_temp_file.name)
-        subject_path = Path(subject_temp_file.name)
-        print(f"Saved subject image to temporary file: {subject_path}")
+        # Save with delete=False, manager will clean up
+        subject_temp_fd, subject_temp_file_path = tempfile.mkstemp(
+            suffix=subject_suffix)
+        subject_file.save(subject_temp_file_path)
+        os.close(subject_temp_fd)  # Close descriptor after saving
+        print(f"Saved subject temp file: {subject_temp_file_path}")
 
-        # Mask Image
         if 'mask' not in request.files or not request.files['mask'].filename:
-            # Clean up subject temp file if mask is missing
-            os.unlink(subject_path)
-            return jsonify({'error': 'Missing "mask" image file in form data.'}), 400
+            # Clean up subject
+            await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path)
+            return jsonify({'error': 'Missing "mask" image file.'}), 400
         mask_file = request.files['mask']
-        # Keep original extension
         mask_suffix = Path(mask_file.filename).suffix or '.png'
-        mask_temp_file = tempfile.NamedTemporaryFile(
-            delete=False, suffix=mask_suffix)
-        mask_file.save(mask_temp_file.name)
-        mask_path = Path(mask_temp_file.name)
-        print(f"Saved mask image to temporary file: {mask_path}")
+        mask_temp_fd, mask_temp_file_path = tempfile.mkstemp(
+            suffix=mask_suffix)
+        mask_file.save(mask_temp_file_path)
+        os.close(mask_temp_fd)
+        print(f"Saved mask temp file: {mask_temp_file_path}")
 
-        # --- Call Predictor ---
-        # Uses defaults from predict.py for height, width, seed, lora_scales
-        print(
-            f"Calling predictor with subject: {subject_path}, mask: {mask_path}, expression: {expression}")
-        output_path_predictor = predictor.predict(
-            input_image=subject_path,
-            inpainting_mask=mask_path,
-            expression=expression,
-            seed=42,
-            height=768,
-            width=512,
-            subject_lora_scale=1.0,
-            inpainting_lora_scale=1.0
-        )
-        print(f"Predictor returned output path: {output_path_predictor}")
-
-        # --- Prepare Response ---
-        # Read the output file and encode it as Base64
-        image_base64 = None
+        # --- Prepare Job Data ---
+        # Use defaults from predict.py or allow overrides from form data
         try:
-            with open(output_path_predictor, 'rb') as f:
-                image_bytes = f.read()
-                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                print(f"Encoded image from {output_path_predictor} to Base64.")
-        except Exception as e:
-            print(f"Error reading or encoding predictor output file: {e}")
-            # Clean up input files before raising internal error
-            if subject_temp_file and os.path.exists(subject_temp_file.name):
-                os.unlink(subject_temp_file.name)
-            if mask_temp_file and os.path.exists(mask_temp_file.name):
-                os.unlink(mask_temp_file.name)
-            raise  # Re-raise the exception to be caught by the outer try-except
+            job_data = {
+                "input_image_path": subject_temp_file_path,
+                "mask_image_path": mask_temp_file_path,
+                "expression": expression,
+                "seed": int(request.form.get('seed', 42)),
+                "height": int(request.form.get('height', 768)),
+                "width": int(request.form.get('width', 512)),
+                "subject_lora_scale": float(request.form.get('subject_lora_scale', 1.0)),
+                "inpainting_lora_scale": float(request.form.get('inpainting_lora_scale', 1.0))
+            }
+        except ValueError as e:
+            # Handle potential errors converting form data to int/float
+            await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path, mask_temp_file_path)
+            return jsonify({'error': f'Invalid parameter format: {e}'}), 400
 
-        # Prepare the JSON response
-        response_data = {'image_base64': image_base64}
+        # --- Submit Job to Queue Manager ---
+        # Don't log full temp paths here for brevity/security
+        print(
+            f"Submitting job: expression={job_data['expression']}, seed={job_data['seed']}, size={job_data['width']}x{job_data['height']}")
+        job_id = await queue_manager.submit_job(job_data)
 
-        # --- Cleanup ---
-        # Use a function to schedule cleanup *after* the request context ends
-        # This is simpler than call_on_close when not using send_file
-        def cleanup_files():
-            print("Cleaning up temporary files...")
-            # Input files
-            if subject_temp_file and os.path.exists(subject_temp_file.name):
-                try:
-                    os.unlink(subject_temp_file.name)
-                    print(
-                        f"Deleted subject temp file: {subject_temp_file.name}")
-                except Exception as e:
-                    print(
-                        f"Error deleting subject temp file {subject_temp_file.name}: {e}")
-            if mask_temp_file and os.path.exists(mask_temp_file.name):
-                try:
-                    os.unlink(mask_temp_file.name)
-                    print(f"Deleted mask temp file: {mask_temp_file.name}")
-                except Exception as e:
-                    print(
-                        f"Error deleting mask temp file {mask_temp_file.name}: {e}")
-
-            # Predictor output file (make sure it exists before deleting)
-            # Use the actual path returned
-            predictor_output_path = Path(output_path_predictor)
-            if predictor_output_path.exists():
-                try:
-                    os.unlink(predictor_output_path)
-                    print(
-                        f"Deleted predictor output file: {predictor_output_path}")
-                except Exception as e:
-                    print(
-                        f"Error deleting predictor output file {predictor_output_path}: {e}")
-
-        # Register cleanup function to run after request is complete
-        from flask import after_this_request
-
-        @after_this_request
-        def schedule_cleanup(response):
-            cleanup_files()
-            return response
-
-        return jsonify(response_data)
+        # --- Return Job ID Immediately ---
+        # Cleanup is now handled by the QueueManager's processing functions
+        # 202 Accepted
+        return jsonify({'job_id': job_id, 'status': 'submitted'}), 202
 
     except Exception as e:
-        print(f"An error occurred: {e}")
-        print(traceback.format_exc())  # Print full traceback for debugging
-        # Ensure cleanup happens even on error before returning response
-        # Note: predictor output might not exist or be cleaned up if error was before/during prediction
-        if subject_temp_file and os.path.exists(subject_temp_file.name):
-            try:
-                os.unlink(subject_temp_file.name)
-                print(
-                    f"Cleaned up subject temp file on error: {subject_temp_file.name}")
-            except Exception as clean_e:
-                print(f"Error during error cleanup (subject): {clean_e}")
-        if mask_temp_file and os.path.exists(mask_temp_file.name):
-            try:
-                os.unlink(mask_temp_file.name)
-                print(
-                    f"Cleaned up mask temp file on error: {mask_temp_file.name}")
-            except Exception as clean_e:
-                print(f"Error during error cleanup (mask): {clean_e}")
-        # Don't try to delete output_temp_file as it's removed
-        # Predictor output cleanup is handled by the main cleanup logic or might fail if prediction failed
-
-        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+        print(f"Error in /generate endpoint: {e}\n{traceback.format_exc()}")
+        # Attempt cleanup if files were created before the error
+        await queue_manager._cleanup_temp_files('generate_endpoint_error', subject_temp_file_path, mask_temp_file_path)
+        return jsonify({'error': 'An internal error occurred during job submission.', 'detail': str(e)}), 500
 
 
+# New async endpoint to check job status
+@app.route('/queue/<job_id>', methods=['GET'])
+async def get_status(job_id):
+    print(f"Checking status for job_id: {job_id}")
+    status_info = await queue_manager.get_job_status(job_id)
+
+    if status_info is None:
+        return jsonify({'error': 'Job ID not found'}), 404
+
+    response_data = {
+        'job_id': job_id,
+        'status': status_info['status']
+    }
+
+    if status_info['status'] == 'completed':
+        response_data['image_base64'] = status_info['result']
+        return jsonify(response_data), 200
+    elif status_info['status'] == 'failed':
+        response_data['error_message'] = status_info.get(
+            'result', 'Unknown error')  # Get error message if available
+        # Return 200 OK but indicate failure in status
+        return jsonify(response_data), 200
+    else:
+        # Status is pending, processing_local, or processing_replicate
+        # Still processing, return current status
+        return jsonify(response_data), 200
+
+
+# Running the app requires an ASGI server
+# Example: pip install uvicorn
+# Run: uvicorn app:app --host 0.0.0.0 --port 8000 --workers 1
+# Note: --workers 1 is important for shared resources like the predictor/GPU unless managed carefully.
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    print("Starting application using Flask development server (NOT recommended for async).")
+    print("Please use an ASGI server like Uvicorn or Hypercorn for production/proper async handling:")
+    print("Example: uvicorn app:app --host 0.0.0.0 --port 8000 --workers 1")
+    # Running with app.run() will likely lead to issues with asyncio concurrency.
+    # Disable debug for clarity, set False
+    app.run(host='0.0.0.0', port=8000, debug=False)

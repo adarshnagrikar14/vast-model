@@ -10,8 +10,9 @@ from typing import Dict, Any, Optional, Tuple, Callable
 load_dotenv()
 
 MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", "1"))
-MAX_REPLICATE_CONCURRENCY = 1
-MAX_GEMINI_CONCURRENCY = 8  # As requested in the prompt
+MAX_REPLICATE_CONCURRENCY = int(
+    os.environ.get("MAX_REPLICATE_CONCURRENCY", "1"))
+MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "8"))
 
 
 class ProcessorType(Enum):

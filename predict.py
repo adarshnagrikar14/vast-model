@@ -373,30 +373,42 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
         if not google_api_key:
             raise ValueError("Google API key not configured")
 
+        # Save mask image to temp file
+        mask_fd, mask_path = tempfile.mkstemp(
+            suffix=".png", prefix="gemini_mask_", dir=TEMP_DIR)
+        with os.fdopen(mask_fd, 'wb') as tmp_file:
+            tmp_file.write(mask_image_bytes)
+
+        # Save input image to temp file
         input_fd, input_path = tempfile.mkstemp(
             suffix=".png", prefix="gemini_input_", dir=TEMP_DIR)
         with os.fdopen(input_fd, 'wb') as tmp_file:
-            tmp_file.write(mask_image_bytes)
+            tmp_file.write(input_image_bytes)
 
+        # Load images as PIL objects
+        mask_image_pil = PILImage.open(mask_path).convert("RGB")
         input_image_pil = PILImage.open(input_path).convert("RGB")
 
+        # Initialize Gemini model
         model = genai.GenerativeModel('gemini-2.0-flash')
 
         system_prompt = """
         You are a helpful assistant skilled at generating image descriptions. You will receive a request to describe an image and you should provide a single paragraph description suitable for use with a text-to-image AI model. Be detailed and descriptive, capturing the overall style, key elements, and atmosphere of the image. Do not mention the absence of facial features or any masking of the face. Focus on clothing, pose, background, and artistic style.
         """
 
-        img_byte_arr = io.BytesIO()
-        input_image_pil.save(img_byte_arr, format='PNG')
-        img_byte_arr = img_byte_arr.getvalue()
+        # Convert mask image to bytes for Gemini
+        mask_byte_arr = io.BytesIO()
+        mask_image_pil.save(mask_byte_arr, format='PNG')
+        mask_byte_arr = mask_byte_arr.getvalue()
 
-        image_part = {"mime_type": "image/png", "data": img_byte_arr}
+        # Create image part for Gemini with the mask image
+        image_part = {"mime_type": "image/png", "data": mask_byte_arr}
 
         # Generate image description using Gemini
         try:
             image_description_response = model.generate_content([
                 system_prompt,
-                "Describe the following image in detail:",
+                f"{system_prompt} Describe the following image in detail:",
                 image_part
             ])
             image_description = image_description_response.text
@@ -406,7 +418,8 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
 
         # Construct the prompt for OpenAI
         openai_edit_prompt = f"""
-        Transform to Digital illustration in {expression} style. Focus on the face first and then the body.Maintain face resemblance, with good details and expression. {image_description}
+        Transform to Digital illustration in {expression} style. Focus on the face first and then the body. 
+        Maintain face resemblance, with good details and expression. {image_description}
         """
 
         # Use OpenAI client for image editing
@@ -429,10 +442,10 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
 
             # Clean up temp files
             try:
+                os.unlink(mask_path)
                 os.unlink(input_path)
             except Exception as e:
-                print(
-                    f"Warning: Failed to delete temp input file {input_path}: {e}")
+                print(f"Warning: Failed to delete temp files: {e}")
 
             return image_base64
 

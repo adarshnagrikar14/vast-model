@@ -376,7 +376,7 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
         input_fd, input_path = tempfile.mkstemp(
             suffix=".png", prefix="gemini_input_", dir=TEMP_DIR)
         with os.fdopen(input_fd, 'wb') as tmp_file:
-            tmp_file.write(input_image_bytes)
+            tmp_file.write(mask_image_bytes)
 
         input_image_pil = PILImage.open(input_path).convert("RGB")
 

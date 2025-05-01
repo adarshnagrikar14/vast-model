@@ -1,5 +1,4 @@
 --extra-index-url https://download.pytorch.org/whl/cu114
-cog
 torch
 torchvision
 torchaudio==2.3.1

@@ -1,6 +1,0 @@
-build:
-  gpu: true # Specify GPU requirement
-  python_version: "3.11" # Match a supported version if possible, adjust if needed
-  python_requirements: requirements.txt # Referencing a requirements file is cleaner
-
-predict: "predict.py:Predictor" # Points to the Predictor class in predict.py

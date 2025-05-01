@@ -105,7 +105,7 @@ def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop hap
         mask_image_uri = image_bytes_to_data_uri(mask_image_bytes)
 
         output_url = replicate.run(
-            "adarshnagrikar14/manhwa-ai:69ca61c6d0be49ff4a88a5b1dcf647e742dc2950c267432b7a913bce3852f775",
+            "adarshnagrikar14/manhwa-ai:155a8f5e784ce61cf89965b4463e686cb204aa6880a9ca317038f4a595ad5038",
             input={
                 "seed": DEFAULT_SEED,
                 "width": DEFAULT_WIDTH,

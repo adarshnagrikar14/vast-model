@@ -295,7 +295,7 @@ class Predictor:
                 generator=generator,
                 subject_images=subject_images_pil,
                 spatial_images=spatial_images_pil,
-                cond_size=512,
+                cond_size=768,
             ).images[0]
 
             output_fd, output_path_str = tempfile.mkstemp(

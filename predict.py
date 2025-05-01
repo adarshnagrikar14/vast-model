@@ -2,11 +2,9 @@ import os
 import io
 import sys
 import torch
+import base64
 import tempfile
 import traceback
-import base64
-import replicate
-import requests
 from openai import OpenAI
 from dotenv import load_dotenv
 from PIL import Image as PILImage
@@ -36,7 +34,7 @@ DEFAULT_SEED = 42
 DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 768
 DEFAULT_GUIDANCE_SCALE = 3.5
-DEFAULT_NUM_INFERENCE_STEPS = 16
+DEFAULT_NUM_INFERENCE_STEPS = 25
 DEFAULT_SUBJECT_LORA_SCALE = 1.0
 DEFAULT_MAX_SEQUENCE_LENGTH = 512
 DEFAULT_INPAINTING_LORA_SCALE = 1.0
@@ -105,7 +103,7 @@ def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop hap
         mask_image_uri = image_bytes_to_data_uri(mask_image_bytes)
 
         output_url = replicate.run(
-            "adarshnagrikar14/manhwa-ai:155a8f5e784ce61cf89965b4463e686cb204aa6880a9ca317038f4a595ad5038",
+            "adarshnagrikar14/manhwa-ai:2cfc253b2070af68f932afced7959b05de1e4ec800200ef945f338d3c289a8a1",
             input={
                 "seed": DEFAULT_SEED,
                 "width": DEFAULT_WIDTH,
@@ -231,10 +229,10 @@ class Predictor:
 
             fixed_expression = expression
             openai_edit_prompt = f"""
-            Crop the face precisely and convert it into a digital illustration in {fixed_expression} style.
-            Maintain exact facial details and hair style and keep eyes open.
-            Slightly widen the face while preserving original structure and strong likeness.
-            Retain fine facial details—including lines and wrinkles (if present).
+            - Crop the face precisely and convert it into a digital illustration in {fixed_expression} style.
+            - It should be a digital illustration.
+            - Maintain facial details, resemblance, and hair style and keep eyes open.
+            - Retain fine facial details—including lines and wrinkles (if present).
             """
 
             edited_subject_pil = edit_image_openai(

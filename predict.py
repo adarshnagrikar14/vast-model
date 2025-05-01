@@ -237,7 +237,7 @@ class Predictor:
 
             fixed_expression = expression
             openai_edit_prompt = f"""
-            - Crop the face precisely and convert it into a digital illustration in {fixed_expression} style.
+            - Crop the face precisely (looking stratight) and convert it into a digital illustration in {fixed_expression} style.
             - It should be a digital illustration.
             - Maintain facial details, resemblance, and hair style and keep eyes open.
             - Retain fine facial details—including lines and wrinkles (if present).
@@ -290,7 +290,7 @@ class Predictor:
             set_multi_lora(self.pipe.transformer, lora_paths,
                            lora_weights=lora_weights, cond_size=768)
 
-            flux_prompt = "put exact face on the body, match body skin tone"
+            flux_prompt = "put exact face on the body, match body skin tone. face should be looking straight"
             generator = torch.Generator(self.device).manual_seed(DEFAULT_SEED)
 
             generated_pil_image = self.pipe(
@@ -380,7 +380,7 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
 
         input_image_pil = PILImage.open(input_path).convert("RGB")
 
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model = genai.GenerativeModel('gemini-2.0-flash')
 
         system_prompt = """
         You are a helpful assistant skilled at generating image descriptions. You will receive a request to describe an image and you should provide a single paragraph description suitable for use with a text-to-image AI model. Be detailed and descriptive, capturing the overall style, key elements, and atmosphere of the image. Do not mention the absence of facial features or any masking of the face. Focus on clothing, pose, background, and artistic style.

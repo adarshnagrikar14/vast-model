@@ -9,6 +9,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from PIL import Image as PILImage
 from huggingface_hub import login
+import google.generativeai as genai
 from src.pipeline import FluxPipeline
 from src.lora_helper import set_multi_lora, unset_lora
 from src.transformer_flux import FluxTransformer2DModel
@@ -23,6 +24,13 @@ if token:
     login(token=token)
 
 openai_api_key = os.environ.get("OPENAI_API_KEY")
+google_api_key = os.environ.get("GOOGLE_API_KEY")
+
+# Configure Google Gemini API if key is available
+if google_api_key:
+    genai.configure(api_key=google_api_key)
+else:
+    print("Warning: GOOGLE_API_KEY environment variable not set. Gemini processing will be disabled.")
 
 LORA_BASE_PATH = "./models"
 TEMP_DIR = "./tmp_job_files"
@@ -357,3 +365,82 @@ def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy")
         return image_base64
     else:
         raise Exception("Prediction finished but output file not found.")
+
+
+def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
+    """Process a job using Google's Gemini API"""
+    try:
+        if not google_api_key:
+            raise ValueError("Google API key not configured")
+
+        input_fd, input_path = tempfile.mkstemp(
+            suffix=".png", prefix="gemini_input_", dir=TEMP_DIR)
+        with os.fdopen(input_fd, 'wb') as tmp_file:
+            tmp_file.write(input_image_bytes)
+
+        input_image_pil = PILImage.open(input_path).convert("RGB")
+
+        model = genai.GenerativeModel('gemini-1.5-pro')
+
+        system_prompt = """
+        You are a helpful assistant skilled at generating image descriptions. You will receive a request to describe an image and you should provide a single paragraph description suitable for use with a text-to-image AI model. Be detailed and descriptive, capturing the overall style, key elements, and atmosphere of the image. Do not mention the absence of facial features or any masking of the face. Focus on clothing, pose, background, and artistic style.
+        """
+
+        img_byte_arr = io.BytesIO()
+        input_image_pil.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+
+        image_part = {"mime_type": "image/png", "data": img_byte_arr}
+
+        # Generate image description using Gemini
+        try:
+            image_description_response = model.generate_content([
+                system_prompt,
+                "Describe the following image in detail:",
+                image_part
+            ])
+            image_description = image_description_response.text
+        except Exception as e:
+            print(f"Error generating image description with Gemini: {e}")
+            image_description = "Digital illustration in " + expression + " style."
+
+        # Construct the prompt for OpenAI
+        openai_edit_prompt = f"""
+        Transform to Digital illustration in {expression} style. Focus on the face first and then the body.Maintain face resemblance, with good details and expression. {image_description}
+        """
+
+        # Use OpenAI client for image editing
+        if not openai_api_key:
+            raise ValueError("OpenAI API key not configured")
+
+        client = OpenAI(api_key=openai_api_key)
+
+        try:
+            response = client.images.edit(
+                model="gpt-image-1",
+                image=open(input_path, "rb"),
+                n=1,
+                size="1024x1536",
+                quality="medium",
+                prompt=openai_edit_prompt
+            )
+
+            image_base64 = response.data[0].b64_json
+
+            # Clean up temp files
+            try:
+                os.unlink(input_path)
+            except Exception as e:
+                print(
+                    f"Warning: Failed to delete temp input file {input_path}: {e}")
+
+            return image_base64
+
+        except Exception as e:
+            print(
+                f"Error in OpenAI image editing: {e}\n{traceback.format_exc()}")
+            raise
+
+    except Exception as e:
+        print(f"Error in Gemini processing: {e}\n{traceback.format_exc()}")
+        raise

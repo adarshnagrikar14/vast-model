@@ -170,6 +170,60 @@ def predict_replicate(
         return None
 
 
+def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
+    """Process a job using replicate"""
+    try:
+        import requests
+        import tempfile
+        import replicate
+
+        # Run the Replicate model directly
+        input_image_uri = image_bytes_to_data_uri(input_image_bytes)
+        mask_image_uri = image_bytes_to_data_uri(mask_image_bytes)
+
+        output_url = replicate.run(
+            "adarshnagrikar14/manhwa-ai:0ed8ac8e28cfb050730eb3e1fbcbc9c60d7001e3a53931cc4f3c44cf08bab659",
+            input={
+                "seed": 42,
+                "width": 512,
+                "height": 768,
+                "expression": expression,
+                "subject_lora_scale": 1.0,
+                "inpainting_lora_scale": 1.0,
+                "input_image": input_image_uri,
+                "inpainting_mask": mask_image_uri
+            }
+        )
+
+        # Download image from URL
+        response = requests.get(output_url, stream=True)
+        response.raise_for_status()
+
+        # Save to temp file
+        output_fd, output_path_str = tempfile.mkstemp(
+            suffix=".png", prefix="replicate_output_", dir=TEMP_DIR)
+        with os.fdopen(output_fd, 'wb') as tmp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                tmp_file.write(chunk)
+
+        # Read and encode the image
+        with open(output_path_str, "rb") as img_file:
+            image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+
+        # Clean up
+        try:
+            os.unlink(output_path_str)
+        except Exception as e:
+            print(
+                f"Warning: Failed to delete temp output file {output_path_str}: {e}")
+
+        return image_base64
+
+    except Exception as e:
+        print(f"Error in Replicate processing: {e}\n{traceback.format_exc()}")
+        raise
+
+
 class Predictor:
     def setup(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -358,3 +412,27 @@ class Predictor:
                     os.unlink(png_temp_path)
                 except Exception:
                     pass
+
+
+def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
+    """Process a job using local resources"""
+    predictor = Predictor()
+    predictor.setup()
+
+    output_image_path = predictor.predict(
+        input_image_bytes=input_image_bytes,
+        mask_image_bytes=mask_image_bytes,
+        expression=expression
+    )
+
+    if output_image_path and os.path.exists(output_image_path):
+        with open(output_image_path, "rb") as img_file:
+            image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+        try:
+            os.unlink(output_image_path)
+        except Exception as e:
+            print(
+                f"Warning: Failed to delete temp output file {output_image_path}: {e}")
+        return image_base64
+    else:
+        raise Exception("Prediction finished but output file not found.")

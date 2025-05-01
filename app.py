@@ -6,7 +6,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from predict import Predictor
+from predict import (
+    Predictor,
+    process_replicate,
+    process_local,
+)
 from queue_manager import queue_manager
 
 TEMP_DIR = "./tmp_job_files"
@@ -27,52 +31,6 @@ app.add_middleware(
 
 predictor = Predictor()
 predictor.setup()
-
-
-def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
-    """Process a job using local resources"""
-    output_image_path = predictor.predict(
-        input_image_bytes=input_image_bytes,
-        mask_image_bytes=mask_image_bytes,
-        expression=expression
-    )
-
-    if output_image_path and os.path.exists(output_image_path):
-        with open(output_image_path, "rb") as img_file:
-            image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
-        try:
-            os.unlink(output_image_path)
-        except Exception as e:
-            print(
-                f"Warning: Failed to delete temp output file {output_image_path}: {e}")
-        return image_base64
-    else:
-        raise Exception("Prediction finished but output file not found.")
-
-
-def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
-    """Process a job using replicate"""
-    from predict import predict_replicate
-
-    output_image_path = predict_replicate(
-        input_image_bytes=input_image_bytes,
-        mask_image_bytes=mask_image_bytes,
-        expression=expression
-    )
-
-    if output_image_path and os.path.exists(output_image_path):
-        with open(output_image_path, "rb") as img_file:
-            image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
-        try:
-            os.unlink(output_image_path)
-        except Exception as e:
-            print(
-                f"Warning: Failed to delete temp output file {output_image_path}: {e}")
-        return image_base64
-    else:
-        raise Exception(
-            "Replicate prediction finished but output file not found.")
-
 
 queue_manager.start(local_processor=process_local,
                     replicate_processor=process_replicate)

@@ -35,9 +35,9 @@ DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 768
 DEFAULT_GUIDANCE_SCALE = 3.5
 DEFAULT_NUM_INFERENCE_STEPS = 25
-DEFAULT_SUBJECT_LORA_SCALE = 1.0
+DEFAULT_SUBJECT_LORA_SCALE = 1.1
 DEFAULT_MAX_SEQUENCE_LENGTH = 512
-DEFAULT_INPAINTING_LORA_SCALE = 1.0
+DEFAULT_INPAINTING_LORA_SCALE = 1.1
 
 try:
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -295,7 +295,7 @@ class Predictor:
                 generator=generator,
                 subject_images=subject_images_pil,
                 spatial_images=spatial_images_pil,
-                cond_size=768,
+                cond_size=512,
             ).images[0]
 
             output_fd, output_path_str = tempfile.mkstemp(

@@ -36,7 +36,7 @@ DEFAULT_SEED = 42
 DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 768
 DEFAULT_GUIDANCE_SCALE = 3.5
-DEFAULT_NUM_INFERENCE_STEPS = 25
+DEFAULT_NUM_INFERENCE_STEPS = 16
 DEFAULT_SUBJECT_LORA_SCALE = 1.0
 DEFAULT_MAX_SEQUENCE_LENGTH = 512
 DEFAULT_INPAINTING_LORA_SCALE = 1.0
@@ -94,82 +94,6 @@ def image_bytes_to_data_uri(image_bytes: bytes, mime_type: str = "image/png") ->
     return f"data:{mime_type};base64,{base64_encoded_data}"
 
 
-def predict_replicate(
-    input_image_bytes: bytes,
-    mask_image_bytes: bytes,
-    expression: str = "k-pop happy",
-) -> str | None:
-    output_path_str = None
-    try:
-        if not os.environ.get("REPLICATE_API_TOKEN"):
-            print(
-                "Warning: REPLICATE_API_TOKEN environment variable not set. Replicate fallback disabled.")
-            return None
-
-        input_image_uri = image_bytes_to_data_uri(input_image_bytes)
-        mask_image_uri = image_bytes_to_data_uri(mask_image_bytes)
-
-        print("Calling Replicate API...")
-        output_url = replicate.run(
-            "adarshnagrikar14/manhwa-ai:0ed8ac8e28cfb050730eb3e1fbcbc9c60d7001e3a53931cc4f3c44cf08bab659",
-            input={
-                "seed": DEFAULT_SEED,
-                "width": DEFAULT_WIDTH,
-                "height": DEFAULT_HEIGHT,
-                "expression": expression,
-                "subject_lora_scale": DEFAULT_SUBJECT_LORA_SCALE,
-                "inpainting_lora_scale": DEFAULT_INPAINTING_LORA_SCALE,
-                "input_image": input_image_uri,
-                "inpainting_mask": mask_image_uri
-            }
-        )
-
-        if not output_url or not isinstance(output_url, str):
-            raise ValueError(
-                f"Invalid output received from Replicate: {output_url}")
-
-        response = requests.get(output_url, stream=True)
-        response.raise_for_status()
-
-        output_fd, output_path_str = tempfile.mkstemp(
-            suffix=".png", prefix="replicate_output_", dir=TEMP_DIR)
-        with os.fdopen(output_fd, 'wb') as tmp_file:
-            for chunk in response.iter_content(chunk_size=8192):
-                tmp_file.write(chunk)
-
-        print(f"Replicate output saved to: {output_path_str}")
-        return output_path_str
-
-    except replicate.exceptions.ReplicateError as e:
-        print(
-            f"ERROR during Replicate prediction: {e}\n{traceback.format_exc()}")
-        if output_path_str and os.path.exists(output_path_str):
-            try:
-                os.unlink(output_path_str)
-            except Exception:
-                pass
-        raise
-    except requests.exceptions.RequestException as e:
-        print(
-            f"ERROR downloading image from Replicate: {e}\n{traceback.format_exc()}")
-        if output_path_str and os.path.exists(output_path_str):
-            try:
-                os.unlink(output_path_str)
-            except Exception:
-                pass
-        return None
-    except Exception as e:
-        print(
-            f"ERROR during Replicate fallback function: {e}\n{traceback.format_exc()}")
-        if output_path_str and os.path.exists(output_path_str):
-            try:
-                os.unlink(output_path_str)
-            except Exception:
-                pass
-        raise
-        return None
-
-
 def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using replicate"""
     try:
@@ -177,21 +101,21 @@ def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop hap
         import tempfile
         import replicate
 
-        # Run the Replicate model directly
         input_image_uri = image_bytes_to_data_uri(input_image_bytes)
         mask_image_uri = image_bytes_to_data_uri(mask_image_bytes)
 
         output_url = replicate.run(
-            "adarshnagrikar14/manhwa-ai:0ed8ac8e28cfb050730eb3e1fbcbc9c60d7001e3a53931cc4f3c44cf08bab659",
+            "adarshnagrikar14/manhwa-ai:268417b9df11eb436576ee805e1787a31c8050edf737ff219c16f1ed2d8fceb9",
             input={
-                "seed": 42,
-                "width": 512,
-                "height": 768,
+                "seed": DEFAULT_SEED,
+                "width": DEFAULT_WIDTH,
+                "height": DEFAULT_HEIGHT,
                 "expression": expression,
-                "subject_lora_scale": 1.0,
-                "inpainting_lora_scale": 1.0,
                 "input_image": input_image_uri,
-                "inpainting_mask": mask_image_uri
+                "inpainting_mask": mask_image_uri,
+                "subject_lora_scale": DEFAULT_SUBJECT_LORA_SCALE,
+                "num_inference_steps": DEFAULT_NUM_INFERENCE_STEPS,
+                "inpainting_lora_scale": DEFAULT_INPAINTING_LORA_SCALE,
             }
         )
 

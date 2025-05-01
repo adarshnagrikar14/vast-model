@@ -1,11 +1,11 @@
 import os
 import time
 import uuid
-import threading
 import queue
+import threading
 from enum import Enum
-from typing import Dict, Any, Optional, Tuple, Callable
 from dotenv import load_dotenv
+from typing import Dict, Any, Optional, Tuple, Callable
 
 load_dotenv()
 
@@ -148,7 +148,7 @@ class QueueManager:
                         continue
                 finally:
                     self.local_semaphore.release()
-            time.sleep(0.1)  # Avoid busy waiting
+            time.sleep(0.1)
 
     def _replicate_worker(self):
         """Worker thread for replicate processing"""
@@ -159,7 +159,7 @@ class QueueManager:
                         continue
                 finally:
                     self.replicate_semaphore.release()
-            time.sleep(0.1)  # Avoid busy waiting
+            time.sleep(0.1)
 
     def clear_completed_jobs(self, max_age_seconds: int = 3600):
         """Clear completed jobs older than max_age_seconds"""

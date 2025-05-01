@@ -308,10 +308,9 @@ class Predictor:
             fixed_expression = expression
             openai_edit_prompt = f"""
             Crop the face precisely and convert it into a digital illustration in {fixed_expression} style.
-            Maintain exact hair style and keep eyes open. Pose with a slight rightward turn.
+            Maintain exact facial details and hair style and keep eyes open.
             Slightly widen the face while preserving original structure and strong likeness.
             Retain fine facial details—including lines and wrinkles (if present).
-            For K-pop style, apply smooth skin, stylized features, and expressive eyes while maintaining resemblance.
             """
 
             edited_subject_pil = edit_image_openai(

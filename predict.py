@@ -102,6 +102,16 @@ def image_bytes_to_data_uri(image_bytes: bytes, mime_type: str = "image/png") ->
 
 def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using replicate"""
+    # Check if expression is a number and convert to string from prompt.json
+    if expression in ["0", "1", "2", "3"]:
+        try:
+            import json
+            with open("prompt.json", "r") as f:
+                prompts = json.load(f)
+            expression = prompts.get(expression, "k-pop happy")
+        except Exception as e:
+            print(f"Error loading expression from prompt.json: {e}")
+
     try:
         import requests
         import tempfile
@@ -345,6 +355,16 @@ class Predictor:
 
 def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using local resources"""
+    # Check if expression is a number and convert to string from prompt.json
+    if expression in ["0", "1", "2", "3"]:
+        try:
+            import json
+            with open("prompt.json", "r") as f:
+                prompts = json.load(f)
+            expression = prompts.get(expression, "k-pop happy")
+        except Exception as e:
+            print(f"Error loading expression from prompt.json: {e}")
+
     predictor = Predictor()
     predictor.setup()
 
@@ -369,6 +389,16 @@ def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy")
 
 def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using Google's Gemini API"""
+    # Check if expression is a number and convert to string from prompt.json
+    if expression in ["0", "1", "2", "3"]:
+        try:
+            import json
+            with open("prompt.json", "r") as f:
+                prompts = json.load(f)
+            expression = prompts.get(expression, "k-pop happy")
+        except Exception as e:
+            print(f"Error loading expression from prompt.json: {e}")
+
     try:
         if not google_api_key:
             raise ValueError("Google API key not configured")

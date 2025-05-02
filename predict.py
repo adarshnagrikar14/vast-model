@@ -418,8 +418,8 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
 
         # Construct the prompt for OpenAI
         openai_edit_prompt = f"""
-        Transform to Digital illustration in {expression} style. Focus on the face first and then the body. 
-        Maintain face resemblance, with good details and expression. {image_description}
+        Transform to K-Manhwa Digital illustration in {expression} style. Focus on the face first and then the body.
+	It should not look relistic, but definitely resembling. Maintain face resemblance, with good details and expression. {image_description}
         """
 
         # Use OpenAI client for image editing

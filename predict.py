@@ -414,12 +414,15 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
             image_description = image_description_response.text
         except Exception as e:
             print(f"Error generating image description with Gemini: {e}")
-            image_description = "Digital illustration in " + expression + " style."
+            image_description = f"""Use bold colors, dynamic lighting, and comic-style shading typical of high-quality K-Manhwa art. The body and outfit should complement the facial expression and setting. The character should be in a pose that is suitable for the expression according to the image description as: {image_description}"""
 
+        print(expression)
         # Construct the prompt for OpenAI
         openai_edit_prompt = f"""
-        Transform to K-Manhwa Digital illustration in {expression} style. Focus on the face first and then the body.
-	It should not look relistic, but definitely resembling. Maintain face resemblance, with good details and expression. {image_description}
+        Transform into a detailed Korean Manhwa-style digital illustration in the {expression} style.
+        Focus only on the face with resemblance, expressive eyes, stylized hair, and defined shadows.
+        Keep strong facial resemblance and expression, avoid realism but preserve identity.
+        Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
         """
 
         # Use OpenAI client for image editing

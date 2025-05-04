@@ -448,7 +448,7 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
 
         # Construct the prompt for OpenAI
         openai_edit_prompt = f"""
-        Transform into a detailed Korean Manhwa-style digital illustration in the {expression}. Exact Resembling face and ethnicity. Keep strong facial resemblance avoid realism but preserve identity. Focus on face with clear open eyes (Spectacles, if visible), accurate facial features, defined shadows. Keep strong facial resemblance avoid realism but preserve identity. Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
+        Transform into a detailed Korean Manhwa-style digital illustration in the {expression}, but keep their original face and ethnicity as Indian only. Exact Resembling face and ethnicity. Keep strong facial resemblance avoid realism but preserve identity. Focus on face with clear open eyes (Spectacles, if visible), accurate facial features, defined shadows. Keep strong facial resemblance avoid realism but preserve identity. Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
         """
 
         # openai_edit_prompt = f"""

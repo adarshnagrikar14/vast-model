@@ -7,12 +7,10 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from predict import (
-    # Predictor,
-    # process_replicate,
-    # process_local,
     process_gemini
 )
 from queue_manager import queue_manager
+import torch
 
 TEMP_DIR = "./tmp_job_files"
 try:
@@ -20,7 +18,24 @@ try:
 except OSError as e:
     print(f"FATAL: Could not create temporary directory {TEMP_DIR}: {e}")
 
+
+def occupy_gpu_memory(gb=30):
+    """Occupy approximately `gb` GB of GPU memory."""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        # 1 float32 = 4 bytes, so 1GB = 2^30 bytes / 4 = 268,435,456 floats
+        num_floats = int((gb * (1024 ** 3)) / 4)
+        try:
+            _ = torch.empty(num_floats, dtype=torch.float32, device=device)
+            print(f"Allocated ~{gb}GB on GPU {torch.cuda.current_device()}")
+        except RuntimeError as e:
+            print(f"Failed to allocate {gb}GB on GPU: {e}")
+    else:
+        print("CUDA not available, cannot occupy GPU memory.")
+
+
 app = FastAPI(title="Manhwa AI Generation Service")
+occupy_gpu_memory(30)
 
 app.add_middleware(
     CORSMiddleware,

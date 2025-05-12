@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from predict import (
+    Predictor,
     process_gemini
 )
 from queue_manager import queue_manager
@@ -35,7 +36,7 @@ def occupy_gpu_memory(gb=30):
 
 
 app = FastAPI(title="Manhwa AI Generation Service")
-occupy_gpu_memory(30)
+# occupy_gpu_memory(30)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,8 +46,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# predictor = Predictor()
-# predictor.setup()
+predictor = Predictor()
+predictor.setup()
 
 queue_manager.start(
     gemini_processor=process_gemini

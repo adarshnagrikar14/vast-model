@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from predict import (
     Predictor,
+    process_local,
+    process_replicate,
     process_gemini
 )
 from queue_manager import queue_manager
@@ -50,6 +52,8 @@ predictor = Predictor()
 predictor.setup()
 
 queue_manager.start(
+    local_processor=process_local,
+    replicate_processor=process_replicate,
     gemini_processor=process_gemini
 )
 

@@ -13,9 +13,9 @@ import torch
 
 from src.pipeline import FluxPipeline
 from src.transformer_flux import FluxTransformer2DModel
-# from src.pipeline import FluxPipeline
-# from src.lora_helper import set_multi_lora, unset_lora
-# from src.transformer_flux import FluxTransformer2DModel
+from src.pipeline import FluxPipeline
+from src.lora_helper import set_multi_lora, unset_lora
+from src.transformer_flux import FluxTransformer2DModel
 
 app_dir = os.path.dirname(os.path.abspath(__file__))
 if app_dir not in sys.path:
@@ -299,9 +299,9 @@ class Predictor:
             subject_images_pil = [subject_image_pil]
             spatial_images_pil = [inpainting_mask_pil]
 
-            # unset_lora(self.pipe.transformer)
-            # set_multi_lora(self.pipe.transformer, lora_paths,
-            #                lora_weights=lora_weights, cond_size=768)
+            unset_lora(self.pipe.transformer)
+            set_multi_lora(self.pipe.transformer, lora_paths,
+                           lora_weights=lora_weights, cond_size=768)
 
             flux_prompt = "put exact face on the body, match body skin tone. face should be looking straight"
             generator = torch.Generator(self.device).manual_seed(DEFAULT_SEED)
@@ -356,38 +356,38 @@ class Predictor:
                     pass
 
 
-# def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
-#     """Process a job using local resources"""
-#     # Check if expression is a number and convert to string from prompt.json
-#     if expression in ["0", "1", "2", "3"]:
-#         try:
-#             import json
-#             with open("prompt.json", "r") as f:
-#                 prompts = json.load(f)
-#             expression = prompts.get(expression, "k-pop happy")
-#         except Exception as e:
-#             print(f"Error loading expression from prompt.json: {e}")
+def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
+    """Process a job using local resources"""
+    # Check if expression is a number and convert to string from prompt.json
+    if expression in ["0", "1", "2", "3"]:
+        try:
+            import json
+            with open("prompt.json", "r") as f:
+                prompts = json.load(f)
+            expression = prompts.get(expression, "k-pop happy")
+        except Exception as e:
+            print(f"Error loading expression from prompt.json: {e}")
 
-#     predictor = Predictor()
-#     predictor.setup()
+    predictor = Predictor()
+    predictor.setup()
 
-#     output_image_path = predictor.predict(
-#         input_image_bytes=input_image_bytes,
-#         mask_image_bytes=mask_image_bytes,
-#         expression=expression
-#     )
+    output_image_path = predictor.predict(
+        input_image_bytes=input_image_bytes,
+        mask_image_bytes=mask_image_bytes,
+        expression=expression
+    )
 
-#     if output_image_path and os.path.exists(output_image_path):
-#         with open(output_image_path, "rb") as img_file:
-#             image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
-#         try:
-#             os.unlink(output_image_path)
-#         except Exception as e:
-#             print(
-#                 f"Warning: Failed to delete temp output file {output_image_path}: {e}")
-#         return image_base64
-#     else:
-#         raise Exception("Prediction finished but output file not found.")
+    if output_image_path and os.path.exists(output_image_path):
+        with open(output_image_path, "rb") as img_file:
+            image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+        try:
+            os.unlink(output_image_path)
+        except Exception as e:
+            print(
+                f"Warning: Failed to delete temp output file {output_image_path}: {e}")
+        return image_base64
+    else:
+        raise Exception("Prediction finished but output file not found.")
 
 
 def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):

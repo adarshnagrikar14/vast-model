@@ -7,9 +7,9 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from predict import (
-    Predictor,
-    process_replicate,
-    process_local,
+    # Predictor,
+    # process_replicate,
+    # process_local,
     process_gemini
 )
 from queue_manager import queue_manager
@@ -30,12 +30,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-predictor = Predictor()
-predictor.setup()
+# predictor = Predictor()
+# predictor.setup()
 
 queue_manager.start(
-    local_processor=process_local,
-    replicate_processor=process_replicate,
+    # local_processor=process_local,
+    # replicate_processor=process_replicate,
     gemini_processor=process_gemini
 )
 

@@ -9,15 +9,15 @@ from typing import Dict, Any, Optional, Tuple, Callable
 
 load_dotenv()
 
-MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", "1"))
-MAX_REPLICATE_CONCURRENCY = int(
-    os.environ.get("MAX_REPLICATE_CONCURRENCY", "1"))
+# MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", "1"))
+# MAX_REPLICATE_CONCURRENCY = int(
+#     os.environ.get("MAX_REPLICATE_CONCURRENCY", "1"))
 MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "8"))
 
 
 class ProcessorType(Enum):
-    LOCAL = "local"
-    REPLICATE = "replicate"
+    # LOCAL = "local"
+    # REPLICATE = "replicate"
     GEMINI = "gemini"
 
 
@@ -47,16 +47,16 @@ class QueueManager:
         self.jobs = {}  # job_id -> Job
 
         # Resource tracking
-        self.local_semaphore = threading.Semaphore(MAX_LOCAL_CONCURRENCY)
-        self.replicate_semaphore = threading.Semaphore(
-            MAX_REPLICATE_CONCURRENCY)
+        # self.local_semaphore = threading.Semaphore(MAX_LOCAL_CONCURRENCY)
+        # self.replicate_semaphore = threading.Semaphore(
+        #     MAX_REPLICATE_CONCURRENCY)
         self.gemini_semaphore = threading.Semaphore(MAX_GEMINI_CONCURRENCY)
 
         # Worker threads
-        self.local_worker_thread = threading.Thread(
-            target=self._local_worker, daemon=True)
-        self.replicate_worker_thread = threading.Thread(
-            target=self._replicate_worker, daemon=True)
+        # self.local_worker_thread = threading.Thread(
+        #     target=self._local_worker, daemon=True)
+        # self.replicate_worker_thread = threading.Thread(
+        #     target=self._replicate_worker, daemon=True)
         self.gemini_worker_thread = threading.Thread(
             target=self._gemini_worker, daemon=True)
 
@@ -74,25 +74,25 @@ class QueueManager:
         if self._is_running:
             return
 
-        self.local_processor = local_processor
-        self.replicate_processor = replicate_processor
+        # self.local_processor = local_processor
+        # self.replicate_processor = replicate_processor
         self.gemini_processor = gemini_processor
 
         self._is_running = True
-        self.local_worker_thread.start()
-        self.replicate_worker_thread.start()
+        # self.local_worker_thread.start()
+        # self.replicate_worker_thread.start()
         if gemini_processor:
             self.gemini_worker_thread.start()
 
-        print(
-            f"Queue manager started with {MAX_LOCAL_CONCURRENCY} local workers, {MAX_REPLICATE_CONCURRENCY} replicate worker(s), and {MAX_GEMINI_CONCURRENCY} Gemini worker(s)")
+        # print(
+        #     f"Queue manager started with {MAX_LOCAL_CONCURRENCY} local workers, {MAX_REPLICATE_CONCURRENCY} replicate worker(s), and {MAX_GEMINI_CONCURRENCY} Gemini worker(s)")
 
     def stop(self):
         """Stop the queue manager gracefully"""
         self._stop_event.set()
         self._is_running = False
-        self.local_worker_thread.join(timeout=5)
-        self.replicate_worker_thread.join(timeout=5)
+        # self.local_worker_thread.join(timeout=5)
+        # self.replicate_worker_thread.join(timeout=5)
         self.gemini_worker_thread.join(timeout=5)
         print("Queue manager stopped")
 
@@ -123,11 +123,11 @@ class QueueManager:
 
             print(f"Processing job {job.job_id} with {processor_type.value}")
 
-            if processor_type == ProcessorType.LOCAL:
-                result = self.local_processor(**job.data)
-            elif processor_type == ProcessorType.REPLICATE:
-                result = self.replicate_processor(**job.data)
-            elif processor_type == ProcessorType.GEMINI:
+            # if processor_type == ProcessorType.LOCAL:
+            #     result = self.local_processor(**job.data)
+            # elif processor_type == ProcessorType.REPLICATE:
+            #     result = self.replicate_processor(**job.data)
+            if processor_type == ProcessorType.GEMINI:
                 result = self.gemini_processor(**job.data)
 
             job.result = result

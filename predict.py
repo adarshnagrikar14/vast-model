@@ -164,227 +164,227 @@ def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop hap
         raise
 
 
-class Predictor:
-    def setup(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+# class Predictor:
+#     def setup(self):
+#         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        try:
-            self.pipe = FluxPipeline.from_pretrained(
-                BASE_MODEL_PATH, torch_dtype=torch.bfloat16)
-            transformer = FluxTransformer2DModel.from_pretrained(
-                BASE_MODEL_PATH, subfolder="transformer", torch_dtype=torch.bfloat16)
-            self.pipe.transformer = transformer
-            self.pipe.to(self.device)
-        except Exception as e:
-            print(f"FATAL: Failed to load models from {BASE_MODEL_PATH}: {e}")
-            raise
+#         try:
+#             self.pipe = FluxPipeline.from_pretrained(
+#                 BASE_MODEL_PATH, torch_dtype=torch.bfloat16)
+#             transformer = FluxTransformer2DModel.from_pretrained(
+#                 BASE_MODEL_PATH, subfolder="transformer", torch_dtype=torch.bfloat16)
+#             self.pipe.transformer = transformer
+#             self.pipe.to(self.device)
+#         except Exception as e:
+#             print(f"FATAL: Failed to load models from {BASE_MODEL_PATH}: {e}")
+#             raise
 
-        self.openai_client = None
-        if openai_api_key:
-            try:
-                self.openai_client = OpenAI(api_key=openai_api_key)
-            except Exception as e:
-                print(f"Warning: Failed to configure OpenAI client: {e}")
-        else:
-            print(
-                "Warning: OPENAI_API_KEY environment variable not set. OpenAI editing will be disabled.")
+#         self.openai_client = None
+#         if openai_api_key:
+#             try:
+#                 self.openai_client = OpenAI(api_key=openai_api_key)
+#             except Exception as e:
+#                 print(f"Warning: Failed to configure OpenAI client: {e}")
+#         else:
+#             print(
+#                 "Warning: OPENAI_API_KEY environment variable not set. OpenAI editing will be disabled.")
 
-        self.subject_lora_path = os.path.join(
-            LORA_BASE_PATH, SUBJECT_LORA_FILENAME)
-        self.inpainting_lora_path = os.path.join(
-            LORA_BASE_PATH, INPAINTING_LORA_FILENAME)
-        if not os.path.exists(self.subject_lora_path):
-            raise FileNotFoundError(
-                f"Subject LoRA file not found at {self.subject_lora_path}")
-        if not os.path.exists(self.inpainting_lora_path):
-            raise FileNotFoundError(
-                f"Inpainting LoRA file not found at {self.inpainting_lora_path}")
+#         self.subject_lora_path = os.path.join(
+#             LORA_BASE_PATH, SUBJECT_LORA_FILENAME)
+#         self.inpainting_lora_path = os.path.join(
+#             LORA_BASE_PATH, INPAINTING_LORA_FILENAME)
+#         if not os.path.exists(self.subject_lora_path):
+#             raise FileNotFoundError(
+#                 f"Subject LoRA file not found at {self.subject_lora_path}")
+#         if not os.path.exists(self.inpainting_lora_path):
+#             raise FileNotFoundError(
+#                 f"Inpainting LoRA file not found at {self.inpainting_lora_path}")
 
-    def predict(
-        self,
-        input_image_bytes: bytes,
-        mask_image_bytes: bytes,
-        expression: str = "k-pop happy",
-    ) -> str:
-        output_path_str = None
-        original_temp_path = None
-        png_temp_path = None
+#     def predict(
+#         self,
+#         input_image_bytes: bytes,
+#         mask_image_bytes: bytes,
+#         expression: str = "k-pop happy",
+#     ) -> str:
+#         output_path_str = None
+#         original_temp_path = None
+#         png_temp_path = None
 
-        try:
-            try:
-                original_temp_fd, original_temp_path = tempfile.mkstemp(
-                    suffix=".tmp", dir=TEMP_DIR)
-                with os.fdopen(original_temp_fd, 'wb') as tmp_file:
-                    tmp_file.write(input_image_bytes)
+#         try:
+#             try:
+#                 original_temp_fd, original_temp_path = tempfile.mkstemp(
+#                     suffix=".tmp", dir=TEMP_DIR)
+#                 with os.fdopen(original_temp_fd, 'wb') as tmp_file:
+#                     tmp_file.write(input_image_bytes)
 
-                needs_conversion = False
-                try:
-                    with PILImage.open(original_temp_path) as img:
-                        if img.format != 'PNG':
-                            needs_conversion = True
-                except Exception as img_err:
-                    needs_conversion = True
+#                 needs_conversion = False
+#                 try:
+#                     with PILImage.open(original_temp_path) as img:
+#                         if img.format != 'PNG':
+#                             needs_conversion = True
+#                 except Exception as img_err:
+#                     needs_conversion = True
 
-                openai_input_path = original_temp_path
-                if needs_conversion and self.openai_client:
-                    try:
-                        img = PILImage.open(original_temp_path)
-                        png_fd, png_temp_path = tempfile.mkstemp(
-                            suffix=".png", dir=TEMP_DIR)
-                        os.close(png_fd)
-                        img.save(png_temp_path, format='PNG')
-                        openai_input_path = png_temp_path
-                    except Exception as conv_e:
-                        print(
-                            f"Warning: Failed to convert subject to PNG: {conv_e}.")
+#                 openai_input_path = original_temp_path
+#                 if needs_conversion and self.openai_client:
+#                     try:
+#                         img = PILImage.open(original_temp_path)
+#                         png_fd, png_temp_path = tempfile.mkstemp(
+#                             suffix=".png", dir=TEMP_DIR)
+#                         os.close(png_fd)
+#                         img.save(png_temp_path, format='PNG')
+#                         openai_input_path = png_temp_path
+#                     except Exception as conv_e:
+#                         print(
+#                             f"Warning: Failed to convert subject to PNG: {conv_e}.")
 
-            except Exception as e:
-                if original_temp_path and os.path.exists(original_temp_path):
-                    os.unlink(original_temp_path)
-                if png_temp_path and os.path.exists(png_temp_path):
-                    os.unlink(png_temp_path)
-                raise ValueError(f"Failed processing input image bytes: {e}")
+#             except Exception as e:
+#                 if original_temp_path and os.path.exists(original_temp_path):
+#                     os.unlink(original_temp_path)
+#                 if png_temp_path and os.path.exists(png_temp_path):
+#                     os.unlink(png_temp_path)
+#                 raise ValueError(f"Failed processing input image bytes: {e}")
 
-            fixed_expression = expression
-            openai_edit_prompt = f"""
-            - Crop the face precisely (looking stratight) and convert it into a digital illustration in {fixed_expression} style.
-            - It should be a digital illustration.
-            - Maintain facial details, resemblance, and hair style and keep eyes open.
-            - Retain fine facial details—including lines and wrinkles (if present).
-            """
+#             fixed_expression = expression
+#             openai_edit_prompt = f"""
+#             - Crop the face precisely (looking stratight) and convert it into a digital illustration in {fixed_expression} style.
+#             - It should be a digital illustration.
+#             - Maintain facial details, resemblance, and hair style and keep eyes open.
+#             - Retain fine facial details—including lines and wrinkles (if present).
+#             """
 
-            edited_subject_pil = edit_image_openai(
-                self.openai_client, openai_input_path, openai_edit_prompt)
+#             edited_subject_pil = edit_image_openai(
+#                 self.openai_client, openai_input_path, openai_edit_prompt)
 
-            if edited_subject_pil:
-                subject_image_pil = edited_subject_pil
-            else:
-                try:
-                    subject_image_pil = PILImage.open(
-                        original_temp_path).convert("RGB")
-                except Exception as e:
-                    if original_temp_path and os.path.exists(original_temp_path):
-                        os.unlink(original_temp_path)
-                    if png_temp_path and os.path.exists(png_temp_path):
-                        os.unlink(png_temp_path)
-                    raise ValueError(
-                        f"Failed to load original subject image from {original_temp_path}: {e}")
+#             if edited_subject_pil:
+#                 subject_image_pil = edited_subject_pil
+#             else:
+#                 try:
+#                     subject_image_pil = PILImage.open(
+#                         original_temp_path).convert("RGB")
+#                 except Exception as e:
+#                     if original_temp_path and os.path.exists(original_temp_path):
+#                         os.unlink(original_temp_path)
+#                     if png_temp_path and os.path.exists(png_temp_path):
+#                         os.unlink(png_temp_path)
+#                     raise ValueError(
+#                         f"Failed to load original subject image from {original_temp_path}: {e}")
 
-            if original_temp_path and os.path.exists(original_temp_path):
-                try:
-                    os.unlink(original_temp_path)
-                except Exception as e:
-                    print(
-                        f"Warning: Failed to delete original temp file {original_temp_path}: {e}")
-            if png_temp_path and os.path.exists(png_temp_path):
-                try:
-                    os.unlink(png_temp_path)
-                except Exception as e:
-                    print(
-                        f"Warning: Failed to delete converted PNG temp file {png_temp_path}: {e}")
+#             if original_temp_path and os.path.exists(original_temp_path):
+#                 try:
+#                     os.unlink(original_temp_path)
+#                 except Exception as e:
+#                     print(
+#                         f"Warning: Failed to delete original temp file {original_temp_path}: {e}")
+#             if png_temp_path and os.path.exists(png_temp_path):
+#                 try:
+#                     os.unlink(png_temp_path)
+#                 except Exception as e:
+#                     print(
+#                         f"Warning: Failed to delete converted PNG temp file {png_temp_path}: {e}")
 
-            try:
-                inpainting_mask_pil = PILImage.open(
-                    io.BytesIO(mask_image_bytes)).convert("RGB")
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to load inpainting mask from bytes: {e}")
+#             try:
+#                 inpainting_mask_pil = PILImage.open(
+#                     io.BytesIO(mask_image_bytes)).convert("RGB")
+#             except Exception as e:
+#                 raise ValueError(
+#                     f"Failed to load inpainting mask from bytes: {e}")
 
-            lora_paths = [self.subject_lora_path, self.inpainting_lora_path]
-            lora_weights = [[DEFAULT_SUBJECT_LORA_SCALE],
-                            [DEFAULT_INPAINTING_LORA_SCALE]]
-            subject_images_pil = [subject_image_pil]
-            spatial_images_pil = [inpainting_mask_pil]
+#             lora_paths = [self.subject_lora_path, self.inpainting_lora_path]
+#             lora_weights = [[DEFAULT_SUBJECT_LORA_SCALE],
+#                             [DEFAULT_INPAINTING_LORA_SCALE]]
+#             subject_images_pil = [subject_image_pil]
+#             spatial_images_pil = [inpainting_mask_pil]
 
-            unset_lora(self.pipe.transformer)
-            set_multi_lora(self.pipe.transformer, lora_paths,
-                           lora_weights=lora_weights, cond_size=768)
+#             unset_lora(self.pipe.transformer)
+#             set_multi_lora(self.pipe.transformer, lora_paths,
+#                            lora_weights=lora_weights, cond_size=768)
 
-            flux_prompt = "put exact face on the body, match body skin tone. face should be looking straight"
-            generator = torch.Generator(self.device).manual_seed(DEFAULT_SEED)
+#             flux_prompt = "put exact face on the body, match body skin tone. face should be looking straight"
+#             generator = torch.Generator(self.device).manual_seed(DEFAULT_SEED)
 
-            generated_pil_image = self.pipe(
-                prompt=flux_prompt,
-                height=DEFAULT_HEIGHT,
-                width=DEFAULT_WIDTH,
-                guidance_scale=DEFAULT_GUIDANCE_SCALE,
-                num_inference_steps=DEFAULT_NUM_INFERENCE_STEPS,
-                max_sequence_length=DEFAULT_MAX_SEQUENCE_LENGTH,
-                generator=generator,
-                subject_images=subject_images_pil,
-                spatial_images=spatial_images_pil,
-                cond_size=768,
-            ).images[0]
+#             generated_pil_image = self.pipe(
+#                 prompt=flux_prompt,
+#                 height=DEFAULT_HEIGHT,
+#                 width=DEFAULT_WIDTH,
+#                 guidance_scale=DEFAULT_GUIDANCE_SCALE,
+#                 num_inference_steps=DEFAULT_NUM_INFERENCE_STEPS,
+#                 max_sequence_length=DEFAULT_MAX_SEQUENCE_LENGTH,
+#                 generator=generator,
+#                 subject_images=subject_images_pil,
+#                 spatial_images=spatial_images_pil,
+#                 cond_size=768,
+#             ).images[0]
 
-            output_fd, output_path_str = tempfile.mkstemp(
-                suffix=".png", prefix="flux_output_", dir=TEMP_DIR)
-            os.close(output_fd)
-            generated_pil_image.save(output_path_str)
-            return output_path_str
+#             output_fd, output_path_str = tempfile.mkstemp(
+#                 suffix=".png", prefix="flux_output_", dir=TEMP_DIR)
+#             os.close(output_fd)
+#             generated_pil_image.save(output_path_str)
+#             return output_path_str
 
-        except Exception as e:
-            print(f"ERROR during prediction: {e}\n{traceback.format_exc()}")
-            if original_temp_path and os.path.exists(original_temp_path):
-                try:
-                    os.unlink(original_temp_path)
-                except Exception:
-                    pass
-            if png_temp_path and os.path.exists(png_temp_path):
-                try:
-                    os.unlink(png_temp_path)
-                except Exception:
-                    pass
-            if output_path_str:
-                print(f"(Attempted output path was: {output_path_str})")
-            raise
+#         except Exception as e:
+#             print(f"ERROR during prediction: {e}\n{traceback.format_exc()}")
+#             if original_temp_path and os.path.exists(original_temp_path):
+#                 try:
+#                     os.unlink(original_temp_path)
+#                 except Exception:
+#                     pass
+#             if png_temp_path and os.path.exists(png_temp_path):
+#                 try:
+#                     os.unlink(png_temp_path)
+#                 except Exception:
+#                     pass
+#             if output_path_str:
+#                 print(f"(Attempted output path was: {output_path_str})")
+#             raise
 
-        finally:
-            unset_lora(self.pipe.transformer)
-            clear_cache(self.pipe.transformer)
-            if original_temp_path and os.path.exists(original_temp_path):
-                try:
-                    os.unlink(original_temp_path)
-                except Exception:
-                    pass
-            if png_temp_path and os.path.exists(png_temp_path):
-                try:
-                    os.unlink(png_temp_path)
-                except Exception:
-                    pass
+#         finally:
+#             unset_lora(self.pipe.transformer)
+#             clear_cache(self.pipe.transformer)
+#             if original_temp_path and os.path.exists(original_temp_path):
+#                 try:
+#                     os.unlink(original_temp_path)
+#                 except Exception:
+#                     pass
+#             if png_temp_path and os.path.exists(png_temp_path):
+#                 try:
+#                     os.unlink(png_temp_path)
+#                 except Exception:
+#                     pass
 
 
-def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
-    """Process a job using local resources"""
-    # Check if expression is a number and convert to string from prompt.json
-    if expression in ["0", "1", "2", "3"]:
-        try:
-            import json
-            with open("prompt.json", "r") as f:
-                prompts = json.load(f)
-            expression = prompts.get(expression, "k-pop happy")
-        except Exception as e:
-            print(f"Error loading expression from prompt.json: {e}")
+# def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
+#     """Process a job using local resources"""
+#     # Check if expression is a number and convert to string from prompt.json
+#     if expression in ["0", "1", "2", "3"]:
+#         try:
+#             import json
+#             with open("prompt.json", "r") as f:
+#                 prompts = json.load(f)
+#             expression = prompts.get(expression, "k-pop happy")
+#         except Exception as e:
+#             print(f"Error loading expression from prompt.json: {e}")
 
-    predictor = Predictor()
-    predictor.setup()
+#     predictor = Predictor()
+#     predictor.setup()
 
-    output_image_path = predictor.predict(
-        input_image_bytes=input_image_bytes,
-        mask_image_bytes=mask_image_bytes,
-        expression=expression
-    )
+#     output_image_path = predictor.predict(
+#         input_image_bytes=input_image_bytes,
+#         mask_image_bytes=mask_image_bytes,
+#         expression=expression
+#     )
 
-    if output_image_path and os.path.exists(output_image_path):
-        with open(output_image_path, "rb") as img_file:
-            image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
-        try:
-            os.unlink(output_image_path)
-        except Exception as e:
-            print(
-                f"Warning: Failed to delete temp output file {output_image_path}: {e}")
-        return image_base64
-    else:
-        raise Exception("Prediction finished but output file not found.")
+#     if output_image_path and os.path.exists(output_image_path):
+#         with open(output_image_path, "rb") as img_file:
+#             image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+#         try:
+#             os.unlink(output_image_path)
+#         except Exception as e:
+#             print(
+#                 f"Warning: Failed to delete temp output file {output_image_path}: {e}")
+#         return image_base64
+#     else:
+#         raise Exception("Prediction finished but output file not found.")
 
 
 def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):

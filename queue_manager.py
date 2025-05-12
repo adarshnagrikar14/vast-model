@@ -69,7 +69,7 @@ class QueueManager:
         self.replicate_processor = None
         self.gemini_processor = None
 
-    def start(self, local_processor: Callable, replicate_processor: Callable, gemini_processor: Callable = None):
+    def start(self, gemini_processor: Callable = None):
         """Start the queue manager with processor functions"""
         if self._is_running:
             return

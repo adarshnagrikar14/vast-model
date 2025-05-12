@@ -34,8 +34,6 @@ app.add_middleware(
 # predictor.setup()
 
 queue_manager.start(
-    # local_processor=process_local,
-    # replicate_processor=process_replicate,
     gemini_processor=process_gemini
 )
 

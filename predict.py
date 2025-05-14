@@ -10,6 +10,7 @@ from PIL import Image as PILImage
 from huggingface_hub import login
 import google.generativeai as genai
 import torch
+import json
 
 from src.pipeline import FluxPipeline
 from src.transformer_flux import FluxTransformer2DModel
@@ -108,7 +109,6 @@ def process_replicate(input_image_bytes, mask_image_bytes, expression="k-pop hap
     # Check if expression is a number and convert to string from prompt.json
     if expression in ["0", "1", "2", "3"]:
         try:
-            import json
             with open("prompt.json", "r") as f:
                 prompts = json.load(f)
             expression = prompts.get(expression, "k-pop happy")
@@ -361,7 +361,6 @@ def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy")
     # Check if expression is a number and convert to string from prompt.json
     if expression in ["0", "1", "2", "3"]:
         try:
-            import json
             with open("prompt.json", "r") as f:
                 prompts = json.load(f)
             expression = prompts.get(expression, "k-pop happy")
@@ -392,10 +391,11 @@ def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy")
 
 def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using Google's Gemini API"""
+    desc_lookup_key = expression  # Capture original expression for desc.json fallback
+
     # Check if expression is a number and convert to string from prompt.json
     if expression in ["0", "1", "2", "3"]:
         try:
-            import json
             with open("prompt.json", "r") as f:
                 prompts = json.load(f)
             expression = prompts.get(expression, "k-pop happy")
@@ -447,16 +447,25 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
             image_description = image_description_response.text
         except Exception as e:
             print(f"Error generating image description with Gemini: {e}")
-            image_description = f"""Use bold colors, dynamic lighting, and comic-style shading typical of high-quality K-Manhwa art. The body and outfit should complement the facial expression and setting. The character should be in a pose that is suitable for the expression according to the image description as: {image_description}"""
+            # Default fallback if desc.json lookup fails
+            default_description = "A character in a dynamic pose with stylized features."
+
+            try:
+                with open("desc.json", "r") as f:
+                    descriptions = json.load(f)
+                # Just use expression directly as the key
+                image_description = descriptions.get(
+                    expression, default_description)
+                print(
+                    f"Using description from desc.json for key '{expression}'")
+            except Exception as desc_error:
+                print(f"Error using desc.json: {desc_error}")
+                image_description = default_description
 
         # Construct the prompt for OpenAI
         openai_edit_prompt = f"""
         Transform into a detailed Manhwa-style digital illustration in the {expression}, but keep their original face and ethnicity as Indian only. Exact Resembling face and ethnicity. Keep strong facial resemblance avoid realism but preserve identity. Focus on face with clear open eyes (Spectacles, if visible), accurate facial features, defined shadows. Keep strong facial resemblance avoid realism but preserve identity. Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
         """
-
-        # openai_edit_prompt = f"""
-        # Transform the subject into a detailed Korean Manhwa-style digital illustration, expression: {expression}. Maintain strong facial resemblance and identity, avoid photorealism. Show from head to knees in a centered three-quarter view. Use suitable expressive open eyes, suitable stylized hair, and clear directional shadows and details. Background and clothings: {image_description}.
-        # """
 
         # Use OpenAI client for image editing
         if not openai_api_key:

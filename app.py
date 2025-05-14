@@ -57,6 +57,10 @@ queue_manager.start(
     gemini_processor=process_gemini
 )
 
+# If you have 2 OpenAI keys that can handle 9 requests each per minute
+# Update this line in app.py or add it to your .env file
+MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "18"))
+
 
 @app.get("/")
 def index():

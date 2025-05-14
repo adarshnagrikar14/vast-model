@@ -28,6 +28,7 @@ if token:
     login(token=token)
 
 openai_api_key = os.environ.get("OPENAI_API_KEY")
+openai_api_key2 = os.environ.get("OPENAI_API_KEY2")
 google_api_key = os.environ.get("GOOGLE_API_KEY")
 
 # Configure Google Gemini API if key is available
@@ -35,6 +36,29 @@ if google_api_key:
     genai.configure(api_key=google_api_key)
 else:
     print("Warning: GOOGLE_API_KEY environment variable not set. Gemini processing will be disabled.")
+
+# OpenAI API keys rotation
+OPENAI_API_KEYS = []
+if openai_api_key:
+    OPENAI_API_KEYS.append(openai_api_key)
+if openai_api_key2:
+    OPENAI_API_KEYS.append(openai_api_key2)
+
+# Current OpenAI key index
+CURRENT_OPENAI_KEY_INDEX = 0
+
+# Function to get the next OpenAI API key
+
+
+def get_next_openai_key():
+    global CURRENT_OPENAI_KEY_INDEX
+    if not OPENAI_API_KEYS:
+        return None
+    key = OPENAI_API_KEYS[CURRENT_OPENAI_KEY_INDEX]
+    CURRENT_OPENAI_KEY_INDEX = (
+        CURRENT_OPENAI_KEY_INDEX + 1) % len(OPENAI_API_KEYS)
+    return key
+
 
 LORA_BASE_PATH = "./models"
 TEMP_DIR = "./tmp_job_files"
@@ -510,10 +534,11 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
         """
 
         # Use OpenAI client for image editing
-        if not openai_api_key:
-            raise ValueError("OpenAI API key not configured")
+        key = get_next_openai_key()
+        if not key:
+            raise ValueError("No OpenAI API keys configured")
 
-        client = OpenAI(api_key=openai_api_key)
+        client = OpenAI(api_key=key)
 
         try:
             response = client.images.edit(

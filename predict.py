@@ -56,6 +56,33 @@ try:
 except OSError as e:
     print(f"FATAL: Could not create temporary directory {TEMP_DIR}: {e}")
 
+# Gemini API keys rotation
+GEMINI_API_KEYS = [
+    "AIzaSyDHBQ5_6C6emHD7aUO_eWTzCE7wvIxrNvA",
+    "AIzaSyAxqRhLegXHms1nCmzhuaQQzp-a_HPXUfY",
+    "AIzaSyCRWFSaTIOAGYPMlVa2VbPoaz4knoFkj-E",
+    "AIzaSyBIG8QfWK5v77pVE3K3orGwq1Y5oRQkjqs",
+    "AIzaSyBM3TyRgeaHhs7cqlRR5aJHF97tNu-9jX4",
+    "AIzaSyDRpN6hf44xwjMwhFoclqUNBJ2IZyZzeuQ",
+    "AIzaSyDmVm1yhhPRnprwM1X1SRrj7ntVNjLu8X8",
+    "AIzaSyDlsFkI-SFClohprrj930BTBWVMwZ4VCR0",
+    "AIzaSyBw8j9sjcwuK-pHh0qusfkmla5IGrnoeiE",
+    "AIzaSyD_X94Gt0cENkE6BJTU54HcmrWO_6vgKUA",
+    "AIzaSyCWEaGGNQKW_8Rv9Nl2k9sbOQgkTWvOOVo",
+    "AIzaSyDBHUSRpvLTE0LBWkufuB8jBWo1sXP9-ms"
+]
+# Current key index
+CURRENT_KEY_INDEX = 0
+
+# Function to get the next API key
+
+
+def get_next_gemini_key():
+    global CURRENT_KEY_INDEX
+    key = GEMINI_API_KEYS[CURRENT_KEY_INDEX]
+    CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
+    return key
+
 
 def clear_cache(transformer):
     for name, attn_processor in transformer.attn_processors.items():
@@ -391,8 +418,6 @@ def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy")
 
 def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using Google's Gemini API"""
-    desc_lookup_key = expression  # Capture original expression for desc.json fallback
-
     # Check if expression is a number and convert to string from prompt.json
     if expression in ["0", "1", "2", "3"]:
         try:
@@ -403,9 +428,7 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
             print(f"Error loading expression from prompt.json: {e}")
 
     try:
-        if not google_api_key:
-            raise ValueError("Google API key not configured")
-
+        # No longer need to check for a single API key
         # Save mask image to temp file
         mask_fd, mask_path = tempfile.mkstemp(
             suffix=".png", prefix="gemini_mask_", dir=TEMP_DIR)
@@ -422,9 +445,6 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
         mask_image_pil = PILImage.open(mask_path).convert("RGB")
         input_image_pil = PILImage.open(input_path).convert("RGB")
 
-        # Initialize Gemini model
-        model = genai.GenerativeModel('gemini-2.0-flash')
-
         system_prompt = """
         You are a helpful assistant skilled at generating image descriptions. You will receive a request to describe an image and you should provide a single paragraph description suitable for use with a text-to-image AI model. Be detailed and descriptive, capturing the overall style, key elements, and atmosphere of the image. Do not mention the absence of facial features or any masking of the face. Focus on clothing, pose, background, and artistic style.
         """
@@ -437,23 +457,45 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
         # Create image part for Gemini with the mask image
         image_part = {"mime_type": "image/png", "data": mask_byte_arr}
 
-        # Generate image description using Gemini
-        try:
-            image_description_response = model.generate_content([
-                system_prompt,
-                f"{system_prompt} Describe the following image in detail:",
-                image_part
-            ])
-            image_description = image_description_response.text
-        except Exception as e:
-            print(f"Error generating image description with Gemini: {e}")
-            # Default fallback if desc.json lookup fails
-            default_description = "A character in a dynamic pose with stylized features."
+        # Generate image description using Gemini with key rotation
+        # Try up to 5 keys before giving up
+        keys_tried = 0
+        max_keys_to_try = 5
+        image_description = None
 
+        while keys_tried < max_keys_to_try and image_description is None:
+            try:
+                # Get the next API key and configure Gemini
+                api_key = get_next_gemini_key()
+                print(
+                    f"Trying Gemini API key {keys_tried+1}/{max_keys_to_try}")
+                genai.configure(api_key=api_key)
+
+                model = genai.GenerativeModel('gemini-2.0-flash')
+
+                image_description_response = model.generate_content([
+                    system_prompt,
+                    f"{system_prompt} Describe the following image in detail:",
+                    image_part
+                ])
+                image_description = image_description_response.text
+                print(
+                    f"Successfully generated image description using API key attempt {keys_tried+1}")
+
+            except Exception as e:
+                keys_tried += 1
+                print(f"Error with Gemini API key attempt {keys_tried}: {e}")
+                if keys_tried >= max_keys_to_try:
+                    print(
+                        f"Exhausted {max_keys_to_try} Gemini API key attempts")
+
+        # If all API keys failed, fall back to desc.json
+        if image_description is None:
+            default_description = "A character in a dynamic pose with stylized features."
             try:
                 with open("desc.json", "r") as f:
                     descriptions = json.load(f)
-                # Just use expression directly as the key
+                # Use expression directly as the key
                 image_description = descriptions.get(
                     expression, default_description)
                 print(
@@ -462,7 +504,7 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"
                 print(f"Error using desc.json: {desc_error}")
                 image_description = default_description
 
-        # Construct the prompt for OpenAI
+        # Rest of the function remains unchanged
         openai_edit_prompt = f"""
         Transform into a detailed Manhwa-style digital illustration in the {expression}, but keep their original face and ethnicity as Indian only. Exact Resembling face and ethnicity. Keep strong facial resemblance avoid realism but preserve identity. Focus on face with clear open eyes (Spectacles, if visible), accurate facial features, defined shadows. Keep strong facial resemblance avoid realism but preserve identity. Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
         """

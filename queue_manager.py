@@ -5,14 +5,14 @@ import queue
 import threading
 from enum import Enum
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional, Tuple, Callable
+from typing import Dict, Any, Optional, Tuple, Callable, List
 
 load_dotenv()
 
-MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", "1"))
+MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", "0"))
 MAX_REPLICATE_CONCURRENCY = int(
-    os.environ.get("MAX_REPLICATE_CONCURRENCY", "1"))
-MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "8"))
+    os.environ.get("MAX_REPLICATE_CONCURRENCY", "0"))
+MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "9"))
 
 
 class ProcessorType(Enum):
@@ -52,13 +52,10 @@ class QueueManager:
             MAX_REPLICATE_CONCURRENCY)
         self.gemini_semaphore = threading.Semaphore(MAX_GEMINI_CONCURRENCY)
 
-        # Worker threads
-        self.local_worker_thread = threading.Thread(
-            target=self._local_worker, daemon=True)
-        self.replicate_worker_thread = threading.Thread(
-            target=self._replicate_worker, daemon=True)
-        self.gemini_worker_thread = threading.Thread(
-            target=self._gemini_worker, daemon=True)
+        # Worker thread pools
+        self.local_workers: List[threading.Thread] = []
+        self.replicate_workers: List[threading.Thread] = []
+        self.gemini_workers: List[threading.Thread] = []
 
         # State tracking
         self._stop_event = threading.Event()
@@ -79,21 +76,53 @@ class QueueManager:
         self.gemini_processor = gemini_processor
 
         self._is_running = True
-        self.local_worker_thread.start()
-        self.replicate_worker_thread.start()
-        if gemini_processor:
-            self.gemini_worker_thread.start()
+
+        # Create worker thread pools based on concurrency settings
+        for i in range(MAX_LOCAL_CONCURRENCY):
+            if local_processor:
+                worker = threading.Thread(
+                    target=self._local_worker,
+                    daemon=True,
+                    name=f"local-worker-{i}")
+                worker.start()
+                self.local_workers.append(worker)
+
+        for i in range(MAX_REPLICATE_CONCURRENCY):
+            if replicate_processor:
+                worker = threading.Thread(
+                    target=self._replicate_worker,
+                    daemon=True,
+                    name=f"replicate-worker-{i}")
+                worker.start()
+                self.replicate_workers.append(worker)
+
+        for i in range(MAX_GEMINI_CONCURRENCY):
+            if gemini_processor:
+                worker = threading.Thread(
+                    target=self._gemini_worker,
+                    daemon=True,
+                    name=f"gemini-worker-{i}")
+                worker.start()
+                self.gemini_workers.append(worker)
 
         print(
-            f"Queue manager started with {MAX_LOCAL_CONCURRENCY} local workers, {MAX_REPLICATE_CONCURRENCY} replicate worker(s), and {MAX_GEMINI_CONCURRENCY} Gemini worker(s)")
+            f"Queue manager started with {len(self.local_workers)} local workers, "
+            f"{len(self.replicate_workers)} replicate worker(s), and "
+            f"{len(self.gemini_workers)} Gemini worker(s)")
 
     def stop(self):
         """Stop the queue manager gracefully"""
         self._stop_event.set()
         self._is_running = False
-        self.local_worker_thread.join(timeout=5)
-        self.replicate_worker_thread.join(timeout=5)
-        self.gemini_worker_thread.join(timeout=5)
+
+        # Join all worker threads with timeout
+        for worker in self.local_workers + self.replicate_workers + self.gemini_workers:
+            worker.join(timeout=5)
+
+        self.local_workers.clear()
+        self.replicate_workers.clear()
+        self.gemini_workers.clear()
+
         print("Queue manager stopped")
 
     def submit_job(self, data: Dict[str, Any]) -> str:
@@ -140,50 +169,34 @@ class QueueManager:
         finally:
             job.completed_at = time.time()
 
-    def _try_next_job(self, processor_type: ProcessorType):
-        """Try to get the next job from the queue"""
-        # Use non-blocking get to avoid locking
-        try:
-            for _ in range(self.job_queue.qsize()):
-                job = self.job_queue.get(block=False)
-                self._process_job(job, processor_type)
-                self.job_queue.task_done()
-                return True
-        except queue.Empty:
-            return False
+    def _worker_loop(self, semaphore, processor_type):
+        """Generic worker loop used by all worker types"""
+        while not self._stop_event.is_set():
+            acquired = semaphore.acquire(blocking=False)
+            if acquired:
+                try:
+                    # Try to get a job from the queue
+                    try:
+                        job = self.job_queue.get(block=False)
+                        self._process_job(job, processor_type)
+                        self.job_queue.task_done()
+                    except queue.Empty:
+                        pass  # No jobs available
+                finally:
+                    semaphore.release()
+            time.sleep(0.1)  # Prevent tight loop
 
     def _local_worker(self):
         """Worker thread for local processing"""
-        while not self._stop_event.is_set():
-            if self.local_semaphore.acquire(blocking=False):
-                try:
-                    if self._try_next_job(ProcessorType.LOCAL):
-                        continue
-                finally:
-                    self.local_semaphore.release()
-            time.sleep(0.1)
+        self._worker_loop(self.local_semaphore, ProcessorType.LOCAL)
 
     def _replicate_worker(self):
         """Worker thread for replicate processing"""
-        while not self._stop_event.is_set():
-            if self.replicate_semaphore.acquire(blocking=False):
-                try:
-                    if self._try_next_job(ProcessorType.REPLICATE):
-                        continue
-                finally:
-                    self.replicate_semaphore.release()
-            time.sleep(0.1)
+        self._worker_loop(self.replicate_semaphore, ProcessorType.REPLICATE)
 
     def _gemini_worker(self):
         """Worker thread for Gemini processing"""
-        while not self._stop_event.is_set():
-            if self.gemini_semaphore.acquire(blocking=False):
-                try:
-                    if self._try_next_job(ProcessorType.GEMINI):
-                        continue
-                finally:
-                    self.gemini_semaphore.release()
-            time.sleep(0.1)
+        self._worker_loop(self.gemini_semaphore, ProcessorType.GEMINI)
 
     def clear_completed_jobs(self, max_age_seconds: int = 3600):
         """Clear completed jobs older than max_age_seconds"""
@@ -198,6 +211,74 @@ class QueueManager:
         for job_id in to_remove:
             del self.jobs[job_id]
 
+    def set_processor_state(self, local_enabled=True, replicate_enabled=True, gemini_enabled=True):
+        """Enable or disable specific processor types without restarting the queue manager"""
+        if not self._is_running:
+            print("Queue manager not running, cannot change processor state")
+            return
+
+        # Handle LOCAL processor
+        current_local_count = len(self.local_workers)
+        target_local_count = MAX_LOCAL_CONCURRENCY if local_enabled else 0
+
+        # Handle REPLICATE processor
+        current_replicate_count = len(self.replicate_workers)
+        target_replicate_count = MAX_REPLICATE_CONCURRENCY if replicate_enabled else 0
+
+        # Handle GEMINI processor
+        current_gemini_count = len(self.gemini_workers)
+        target_gemini_count = MAX_GEMINI_CONCURRENCY if gemini_enabled else 0
+
+        # Stop excess workers
+        if current_local_count > target_local_count:
+            for worker in self.local_workers[target_local_count:]:
+                # We can't directly stop threads in Python, so we'll let them terminate naturally
+                # by removing them from our tracking list
+                pass
+            self.local_workers = self.local_workers[:target_local_count]
+
+        if current_replicate_count > target_replicate_count:
+            self.replicate_workers = self.replicate_workers[:target_replicate_count]
+
+        if current_gemini_count > target_gemini_count:
+            self.gemini_workers = self.gemini_workers[:target_gemini_count]
+
+        # Start new workers if needed
+        for i in range(current_local_count, target_local_count):
+            if self.local_processor:
+                worker = threading.Thread(
+                    target=self._local_worker,
+                    daemon=True,
+                    name=f"local-worker-{i}")
+                worker.start()
+                self.local_workers.append(worker)
+
+        for i in range(current_replicate_count, target_replicate_count):
+            if self.replicate_processor:
+                worker = threading.Thread(
+                    target=self._replicate_worker,
+                    daemon=True,
+                    name=f"replicate-worker-{i}")
+                worker.start()
+                self.replicate_workers.append(worker)
+
+        for i in range(current_gemini_count, target_gemini_count):
+            if self.gemini_processor:
+                worker = threading.Thread(
+                    target=self._gemini_worker,
+                    daemon=True,
+                    name=f"gemini-worker-{i}")
+                worker.start()
+                self.gemini_workers.append(worker)
+
+        print(f"Updated processor state: LOCAL={local_enabled} ({len(self.local_workers)} workers), "
+              f"REPLICATE={replicate_enabled} ({len(self.replicate_workers)} workers), "
+              f"GEMINI={gemini_enabled} ({len(self.gemini_workers)} workers)")
+
 
 # Global queue manager instance
 queue_manager = QueueManager()
+
+# Use this to enable only Gemini processing
+queue_manager.set_processor_state(
+    local_enabled=False, replicate_enabled=False, gemini_enabled=True)

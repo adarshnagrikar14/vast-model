@@ -12,7 +12,7 @@ load_dotenv()
 MAX_LOCAL_CONCURRENCY = int(os.environ.get("MAX_LOCAL_CONCURRENCY", "0"))
 MAX_REPLICATE_CONCURRENCY = int(
     os.environ.get("MAX_REPLICATE_CONCURRENCY", "0"))
-MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "18"))
+MAX_GEMINI_CONCURRENCY = int(os.environ.get("MAX_GEMINI_CONCURRENCY", "80"))
 
 
 class ProcessorType(Enum):

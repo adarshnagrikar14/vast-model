@@ -441,31 +441,29 @@ def process_local(input_image_bytes, mask_image_bytes, expression="k-pop happy")
         raise Exception("Prediction finished but output file not found.")
 
 
-def process_gemini(input_image_bytes, mask_image_bytes, expression_param="k-pop happy"):
+def process_gemini(input_image_bytes, mask_image_bytes, expression="k-pop happy"):
     """Process a job using Google's Gemini API"""
 
     # Determine the style expression for prompts and the key for desc.json
-    # Default for non-numeric or if prompt.json fails/key not found
-    style_expression_for_prompts = expression_param
-    key_for_desc_json = expression_param             # Default key for desc.json
+    style_for_prompts = expression  # Default for non-numeric or if prompt.json fails/key not found
+    key_for_desc = expression       # Default key for desc.json
 
-    if expression_param in ["0", "1", "2", "3"]:
+    if expression in ["0", "1", "2", "3"]:
         # Input is a numeric code. This code is the primary key for desc.json.
-        key_for_desc_json = expression_param
+        key_for_desc = expression
         try:
             with open("prompt.json", "r") as f:
                 prompts = json.load(f)
             # Get the textual style from prompt.json for use in Gemini/OpenAI prompts
             # Fallback to "k-pop happy" if key not in prompt.json or if prompt.json loading failed earlier
-            style_expression_for_prompts = prompts.get(
-                expression_param, "k-pop happy")
+            style_for_prompts = prompts.get(expression, "k-pop happy")
         except Exception as e:
             print(f"Error loading expression from prompt.json: {e}")
             # If prompt.json loading fails, use a default textual style for prompts
-            style_expression_for_prompts = "k-pop happy"
-    # else: expression_param is already a textual style like "k-pop happy".
-    # style_expression_for_prompts remains expression_param.
-    # key_for_desc_json remains expression_param (will likely lead to default_description from desc.json, which is fine).
+            style_for_prompts = "k-pop happy"
+    # else: expression is already a textual style like "k-pop happy".
+    # style_for_prompts remains expression.
+    # key_for_desc remains expression (will likely lead to default_description from desc.json, which is fine).
 
     try:
         # No longer need to check for a single API key
@@ -535,18 +533,18 @@ def process_gemini(input_image_bytes, mask_image_bytes, expression_param="k-pop 
             try:
                 with open("desc.json", "r") as f:
                     descriptions = json.load(f)
-                # Use key_for_desc_json to look up in desc.json
+                # Use key_for_desc to look up in desc.json
                 image_description = descriptions.get(
-                    key_for_desc_json, default_description)
+                    key_for_desc, default_description)
                 print(
-                    f"Using description from desc.json for key '{key_for_desc_json}'")
+                    f"Using description from desc.json for key '{key_for_desc}'")
             except Exception as desc_error:
                 print(f"Error using desc.json: {desc_error}")
                 image_description = default_description
 
         # Rest of the function remains unchanged
         openai_edit_prompt = f"""
-        Transform into a detailed Manhwa-style digital illustration in the {style_expression_for_prompts}, but keep their original face and ethnicity as Indian only. Exact Resembling face and ethnicity. Keep strong facial resemblance avoid realism but preserve identity. Focus on face with clear open eyes (Spectacles, if visible), accurate facial features, defined shadows. Keep strong facial resemblance avoid realism but preserve identity. Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
+        Transform into a detailed Manhwa-style digital illustration in the {style_for_prompts}, but keep their original face and ethnicity as Indian only. Exact Resembling face and ethnicity. Keep strong facial resemblance avoid realism but preserve identity. Focus on face with clear open eyes (Spectacles, if visible), accurate facial features, defined shadows. Keep strong facial resemblance avoid realism but preserve identity. Show the character from head down to the knees, and the body should be in a pose that is suitable for the expression according to the image description as: {image_description}
         """
 
         # Use OpenAI client for image editing
